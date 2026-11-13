@@ -5,6 +5,7 @@ import com.google.gson.JsonParser;
 import org.cryptomator.cryptofs.CryptoFileSystemProperties;
 import org.cryptomator.cryptofs.CryptoFileSystemProvider;
 import org.cryptomator.cryptolib.api.CryptorProvider;
+import org.cryptomator.cryptolib.api.AuthenticationFailedException;
 import org.cryptomator.cryptolib.api.Masterkey;
 import org.cryptomator.cryptolib.common.MasterkeyFileAccess;
 
@@ -17,7 +18,6 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -51,7 +51,7 @@ public final class StarcryptOracle {
             } else if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
                 Files.createDirectories(destination);
             } else {
-                Files.write(destination, Files.readAllBytes(entry));
+                Files.copy(entry, destination);
             }
         }
     }
@@ -91,7 +91,7 @@ public final class StarcryptOracle {
             } else {
                 type = "file";
                 if (!Files.isRegularFile(destination, LinkOption.NOFOLLOW_LINKS)
-                        || !Arrays.equals(Files.readAllBytes(entry), Files.readAllBytes(destination))) {
+                        || Files.mismatch(entry, destination) != -1) {
                     throw new AssertionError("File mismatch: " + name);
                 }
             }
@@ -101,10 +101,11 @@ public final class StarcryptOracle {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6 || !(args[0].equals("create") || args[0].equals("verify"))) {
-            throw new IllegalArgumentException("Usage: StarcryptOracle create|verify VAULT SOURCE SCHEME PASSWORD_FILE REPORT");
+        if (args.length != 6 || !(args[0].equals("create") || args[0].equals("verify") || args[0].equals("reject-corrupt"))) {
+            throw new IllegalArgumentException("Usage: StarcryptOracle create|verify|reject-corrupt VAULT SOURCE SCHEME PASSWORD_FILE REPORT");
         }
         boolean create = args[0].equals("create");
+        boolean rejectCorrupt = args[0].equals("reject-corrupt");
         var vault = Path.of(args[1]).toAbsolutePath();
         var source = Path.of(args[2]).toAbsolutePath();
         var scheme = CryptorProvider.Scheme.valueOf(args[3]);
@@ -129,13 +130,33 @@ public final class StarcryptOracle {
                 if (create) {
                     importSource(fileSystem, source);
                 }
-                checked = verifySource(fileSystem, source);
+                if (rejectCorrupt) {
+                    try {
+                        verifySource(fileSystem, source);
+                        throw new AssertionError("Corruption was accepted by official libraries");
+                    } catch (Exception failure) {
+                        // A bad password, missing path, or unrelated I/O failure must
+                        // never be mistaken for successful corruption detection.
+                        boolean authenticatedFailure = false;
+                        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+                            if (cause instanceof AuthenticationFailedException) {
+                                authenticatedFailure = true;
+                            }
+                        }
+                        if (!authenticatedFailure) {
+                            throw failure;
+                        }
+                        checked = List.of(Map.of("rejection", "AuthenticationFailedException"));
+                    }
+                } else {
+                    checked = verifySource(fileSystem, source);
+                }
             }
         }
         var token = Files.readString(vault.resolve("vault.cryptomator")).split("\\.");
         var claims = JsonParser.parseString(new String(Base64.getUrlDecoder().decode(token[1]), StandardCharsets.UTF_8));
         String actualScheme = claims.getAsJsonObject().get("cipherCombo").getAsString();
-        var report = Map.of("pass", true, "action", args[0], "scheme", actualScheme, "checked", checked,
+        var report = Map.of("pass", true, "action", args[0], "scheme", actualScheme, "checked", checked, "corruption_rejected", rejectCorrupt,
                 "java_version", System.getProperty("java.version"));
         Files.writeString(Path.of(args[5]), new GsonBuilder().setPrettyPrinting().create().toJson(report) + "\n");
         System.out.printf("Official Java %s: PASS (%d entries, %s)%n", args[0], checked.size(), actualScheme);

@@ -1,9 +1,10 @@
 //! Creation of standard password-protected Format 8 vaults.
+use crate::encrypt::EncryptionPool;
 use crate::fsutil::{copy_times, new_output, safe_name};
 use anyhow::{Context, Result, bail, ensure};
 use oxcrypt_core::{
     crypto::keys::MasterKey,
-    fs::name::create_c9s_filename,
+    fs::name::{create_c9s_filename, encrypt_filename},
     vault::{
         config::{VaultConfig, create_vault_config},
         master_key::create_masterkey_file,
@@ -11,25 +12,60 @@ use oxcrypt_core::{
         path::DirId,
     },
 };
-use std::{fs, path::Path};
-use zeroize::Zeroizing;
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
+#[cfg(test)]
 pub(crate) fn create(source: &Path, destination: &Path, password: &str) -> Result<()> {
+    create_with_progress(source, destination, password, &crate::Progress::default())
+}
+
+pub(crate) fn create_with_progress(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    progress: &crate::Progress,
+) -> Result<()> {
     ensure!(
         std::env::var_os("OXCRYPT_FAST_KDF").is_none(),
         "Unset OXCRYPT_FAST_KDF before creating vaults"
     );
     let volume_root = crate::fsutil::is_macos_volume_root(source)?;
-    create_with_volume_policy(source, destination, password, volume_root)
+    create_impl(source, destination, password, volume_root, progress)
 }
 
+#[cfg(test)]
 fn create_with_volume_policy(
     source: &Path,
     destination: &Path,
     password: &str,
     volume_root: bool,
 ) -> Result<()> {
+    create_impl(
+        source,
+        destination,
+        password,
+        volume_root,
+        &crate::Progress::default(),
+    )
+}
+
+fn create_impl(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    volume_root: bool,
+    progress: &crate::Progress,
+) -> Result<()> {
     new_output(destination, || {
+        progress.phase("Scanning source");
+        let mut directories = HashMap::new();
+        let (bytes, files) = scan_source(source, volume_root, &mut directories, progress)?;
+        progress.totals(bytes, files);
+        progress.phase("Preparing encryption");
         let key = MasterKey::random()?;
         let config = VaultConfig {
             jti: uuid::Uuid::new_v4().to_string(),
@@ -46,10 +82,28 @@ fn create_with_volume_policy(
             destination.join("vault.cryptomator"),
             root_key_config(&create_vault_config(&config, &key)?, &key)?,
         )?;
+        let date = time::OffsetDateTime::now_utc();
+        fs::write(
+            destination.join("readme.txt"),
+            format!(
+                "Cryptomator vault created by StarCrypt on {:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z. Open it with Cryptomator or extract it with StarCrypt.\n\n\
+                 https://github.com/mcallan83/starcrypt\n",
+                date.year(),
+                u8::from(date.month()),
+                date.day(),
+                date.hour(),
+                date.minute(),
+                date.second()
+            ),
+        )?;
         let ops = VaultOperations::new(destination, key);
         let root = DirId::root();
         fs::create_dir_all(ops.calculate_directory_storage_path(&root)?)?;
-        import(&ops, source, "", volume_root)?;
+        progress.phase("Encrypting");
+        crate::encrypt::with_pool(progress, |pool| {
+            import(&ops, source, &root, volume_root, pool, &directories)
+        })?;
+        progress.phase("Finalizing vault");
         finalize_shortened_names(destination, ops.shortening_threshold())
     })
 }
@@ -111,9 +165,35 @@ fn root_key_config(token: &str, key: &MasterKey) -> Result<String> {
         &key.create_jwt_encoding_key()?,
     )?)
 }
-fn import(ops: &VaultOperations, source: &Path, prefix: &str, volume_root: bool) -> Result<()> {
-    let directory_metadata = fs::metadata(source)
-        .with_context(|| format!("Cannot inspect source directory {}", source.display()))?;
+
+// New vaults need no temporary encrypted empty file before writing the actual
+// header and chunks. Reserve the file exclusively in EncryptionPool instead.
+fn file_destination(ops: &VaultOperations, id: &DirId, name: &str) -> Result<PathBuf> {
+    let storage = ops.calculate_directory_storage_path(id)?;
+    let full_name = format!(
+        "{}.c9r",
+        encrypt_filename(name, id.as_str(), ops.master_key())?
+    );
+    if full_name.len() > ops.shortening_threshold() {
+        let container = storage.join(format!("{}.c9s", create_c9s_filename(&full_name)));
+        fs::create_dir(&container)?;
+        fs::write(container.join("name.c9s"), full_name)?;
+        Ok(container.join("contents.c9r"))
+    } else {
+        Ok(storage.join(full_name))
+    }
+}
+fn import(
+    ops: &VaultOperations,
+    source: &Path,
+    id: &DirId,
+    volume_root: bool,
+    jobs: &EncryptionPool,
+    directories: &HashMap<PathBuf, fs::Metadata>,
+) -> Result<()> {
+    let directory_metadata = directories
+        .get(source)
+        .context("Source directory changed after scanning")?;
     let entries = fs::read_dir(source)
         .with_context(|| format!("Cannot read source directory {}", source.display()))?;
     for entry in entries {
@@ -124,67 +204,90 @@ fn import(ops: &VaultOperations, source: &Path, prefix: &str, volume_root: bool)
             .file_name()
             .into_string()
             .map_err(|_| anyhow::anyhow!("Non-UTF-8 filename: {}", entry.path().display()))?;
-        if volume_root && prefix.is_empty() && is_volume_bookkeeping(&name) {
-            eprintln!(
-                "Skipping macOS volume housekeeping entry: {:?}",
-                entry.path()
-            );
+        if volume_root && is_volume_bookkeeping(&name) {
             continue;
         }
         safe_name(&name)?;
-        let relative = if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
         let kind = entry
             .file_type()
             .with_context(|| format!("Cannot inspect source entry {}", entry.path().display()))?;
         if kind.is_dir() {
-            ops.create_directory_by_path(&relative)?;
-            import(ops, &entry.path(), &relative, volume_root)?;
+            let child = ops.create_directory(id, &name)?;
+            import(ops, &entry.path(), &child, false, jobs, directories)?;
         } else if kind.is_file() {
             let metadata = fs::metadata(entry.path()).with_context(|| {
                 format!("Cannot inspect source file {}", entry.path().display())
             })?;
-            let contents =
-                Zeroizing::new(fs::read(entry.path()).with_context(|| {
-                    format!("Cannot read source file {}", entry.path().display())
-                })?);
-            let encrypted = ops.write_by_path(&relative, &contents)?;
-            // oxcrypt emits a tag-only chunk for empty files. CryptoFS expects
-            // the authenticated 68-byte header alone, with no content chunks.
-            if contents.is_empty() {
-                fs::OpenOptions::new()
-                    .write(true)
-                    .open(&encrypted)?
-                    .set_len(68)?;
-            }
-            copy_times(&encrypted, &metadata)?;
+            // Prepare names serially so directory lookup never races with writes.
+            let encrypted = file_destination(ops, id, &name)?;
+            jobs.encrypt_file(ops, &entry.path(), &encrypted, metadata)?;
         } else if kind.is_symlink() {
             let metadata = fs::symlink_metadata(entry.path())?;
             let target = fs::read_link(entry.path())?;
             let target = target.to_str().context("Non-UTF-8 symlink target")?;
-            ops.create_symlink_by_path(&relative, target)?;
-            let (parent, name) = ops.resolve_parent_path(&relative)?;
+            ops.create_symlink(id, &name, target)?;
             let info = ops
-                .find_symlink(&parent, &name)?
+                .find_symlink(id, &name)?
                 .context("Created symlink is missing")?;
             copy_times(&info.encrypted_path, &metadata)?;
         } else {
             bail!("Unsupported special file: {}", entry.path().display());
         }
     }
-    let id = if prefix.is_empty() {
-        DirId::root()
-    } else {
-        ops.resolve_path(prefix)?.0
-    };
     copy_times(
-        &ops.calculate_directory_storage_path(&id)?,
-        &directory_metadata,
+        &ops.calculate_directory_storage_path(id)?,
+        directory_metadata,
     )?;
     Ok(())
+}
+
+// Save directory metadata before read_dir updates access times. Only directory
+// metadata is retained; the scan neither reads file contents nor follows links.
+fn scan_source(
+    source: &Path,
+    volume_root: bool,
+    directories: &mut HashMap<PathBuf, fs::Metadata>,
+    progress: &crate::Progress,
+) -> Result<(u64, u64)> {
+    let metadata = fs::metadata(source)
+        .with_context(|| format!("Cannot inspect source directory {}", source.display()))?;
+    directories.insert(source.to_owned(), metadata);
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("Cannot read source directory {}", source.display()))?
+    {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Non-UTF-8 filename: {}", entry.path().display()))?;
+        if volume_root && is_volume_bookkeeping(&name) {
+            progress.message(format!(
+                "Skipping macOS system file: {}",
+                entry.path().display()
+            ));
+            continue;
+        }
+        safe_name(&name)?;
+        let kind = entry.file_type()?;
+        let (child_bytes, child_files) = if kind.is_dir() {
+            scan_source(&entry.path(), false, directories, progress)?
+        } else if kind.is_file() {
+            (entry.metadata()?.len(), 1)
+        } else if kind.is_symlink() {
+            (0, 0)
+        } else {
+            bail!("Unsupported special file: {}", entry.path().display());
+        };
+        bytes = bytes
+            .checked_add(child_bytes)
+            .context("Source byte count overflow")?;
+        files = files
+            .checked_add(child_files)
+            .context("Source file count overflow")?;
+    }
+    Ok((bytes, files))
 }
 
 // Exact names only, at the selected volume root. See docs/macos-volumes.md.
@@ -208,6 +311,64 @@ fn is_volume_bookkeeping(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual release-mode throughput measurement; no password KDF"]
+    fn processing_throughput() -> Result<()> {
+        use std::time::Instant;
+        for many_files in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let source = temp.path().join("source");
+            fs::create_dir(&source)?;
+            if many_files {
+                for directory in 0..20 {
+                    let path = source.join(format!("directory-{directory}"));
+                    fs::create_dir(&path)?;
+                    for file in 0..50 {
+                        fs::write(path.join(format!("file-{file}")), vec![42; 4096])?;
+                    }
+                }
+            } else {
+                let mut file = fs::File::create(source.join("large"))?;
+                use std::io::Write;
+                let block = vec![42; 1024 * 1024];
+                for _ in 0..128 {
+                    file.write_all(&block)?;
+                }
+            }
+            for iteration in 0..3 {
+                let vault = temp.path().join(format!("vault-{iteration}"));
+                fs::create_dir(&vault)?;
+                let ops = VaultOperations::new(&vault, MasterKey::random()?);
+                fs::create_dir_all(ops.calculate_directory_storage_path(&DirId::root())?)?;
+                let progress = crate::Progress::default();
+                let mut directories = HashMap::new();
+                let started = Instant::now();
+                scan_source(&source, false, &mut directories, &progress)?;
+                crate::encrypt::with_pool(&progress, |pool| {
+                    import(&ops, &source, &DirId::root(), false, pool, &directories)
+                })?;
+                let encryption = started.elapsed();
+                let output = temp.path().join(format!("output-{iteration}"));
+                let started = Instant::now();
+                crate::fsutil::new_output(&output, || {
+                    crate::extract::export(
+                        &ops,
+                        &DirId::root(),
+                        &output,
+                        &mut std::collections::HashSet::new(),
+                        &crate::Progress::default(),
+                    )
+                })?;
+                eprintln!(
+                    "many_files={many_files} run={iteration} encrypt_ms={:.1} extract_ms={:.1}",
+                    encryption.as_secs_f64() * 1000.0,
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn only_known_volume_bookkeeping_is_excluded() {
@@ -260,9 +421,24 @@ mod tests {
         fs::create_dir(&restricted)?;
         fs::set_permissions(&restricted, fs::Permissions::from_mode(0o300))?;
         let vault = temp.path().join("vault");
-        let result = create_with_volume_policy(&source, &vault, "test password", true);
+        let progress = crate::Progress::with_buffered_messages();
+        let result = create_impl(&source, &vault, "test password", true, &progress);
         fs::set_permissions(&restricted, fs::Permissions::from_mode(0o700))?;
         result?;
+        assert_eq!(progress.snapshot().total_files, Some(4));
+        let expected_bytes = [
+            "nested/.Trashes/keep",
+            ".git/config",
+            "._document",
+            "document",
+        ]
+        .iter()
+        .map(|path| fs::metadata(source.join(path)).unwrap().len())
+        .sum::<u64>();
+        assert_eq!(progress.snapshot().total_bytes, Some(expected_bytes));
+        let messages = progress.drain_messages();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(".Trashes"));
         let restored = temp.path().join("restored");
         crate::extract_vault(&vault, &restored, "test password")?;
         assert!(!restored.join(".Trashes").exists());
@@ -277,7 +453,7 @@ mod tests {
         // A different unreadable entry must still fail even with filtering enabled.
         let unreadable = source.join("private-document");
         fs::write(&unreadable, b"must never silently skip")?;
-        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0))?;
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0))?;
         let failed = temp.path().join("failed");
         let result = create_with_volume_policy(&source, &failed, "test password", true);
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600))?;

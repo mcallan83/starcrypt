@@ -1,5 +1,4 @@
 //! Package encrypted vaults without staging any plaintext copies.
-use crate::create::create;
 use anyhow::{Context, Result, ensure};
 use std::{fs, io, path::Path};
 
@@ -29,17 +28,37 @@ pub(crate) fn create_archive(
     destination: &Path,
     password: &str,
     format: ArchiveFormat,
+    progress: &crate::Progress,
 ) -> Result<()> {
-    create_archive_using(source, destination, password, |vault, file| match format {
-        ArchiveFormat::Zip => write_zip(vault, file),
-        ArchiveFormat::SevenZip => write_seven_zip(vault, file),
+    create_archive_using_progress(source, destination, password, progress, |vault, file| {
+        match format {
+            ArchiveFormat::Zip => write_zip(vault, file),
+            ArchiveFormat::SevenZip => write_seven_zip(vault, file),
+        }
     })
 }
 
+#[cfg(test)]
 fn create_archive_using(
     source: &Path,
     destination: &Path,
     password: &str,
+    write: impl FnOnce(&Path, fs::File) -> Result<()>,
+) -> Result<()> {
+    create_archive_using_progress(
+        source,
+        destination,
+        password,
+        &crate::Progress::default(),
+        write,
+    )
+}
+
+fn create_archive_using_progress(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    progress: &crate::Progress,
     write: impl FnOnce(&Path, fs::File) -> Result<()>,
 ) -> Result<()> {
     let staging = tempfile::Builder::new()
@@ -52,7 +71,8 @@ fn create_archive_using(
     crate::fsutil::safe_name(name)?;
     let vault = staging.path().join(name);
     // Only ciphertext is staged: the archive contains an ordinary vault folder.
-    create(source, &vault, password)?;
+    crate::create::create_with_progress(source, &vault, password, progress)?;
+    progress.phase("Packaging archive");
     let parent = destination
         .parent()
         .context("Archive needs a parent directory")?;
@@ -84,7 +104,7 @@ fn visit(
         add(path, name, &metadata)?;
         if metadata.is_dir() {
             let mut entries = fs::read_dir(path)?.collect::<io::Result<Vec<_>>>()?;
-            entries.sort_by_key(|entry| entry.file_name());
+            entries.sort_by_cached_key(|entry| entry.file_name());
             for entry in entries {
                 let child = entry.file_name();
                 let child = child.to_str().context("Non-UTF-8 encrypted filename")?;

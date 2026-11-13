@@ -35,6 +35,7 @@ impl Unpacker<'_> {
         let path = self.root.join(relative);
         if directory {
             fs::create_dir_all(&path)?;
+            self.times.push((path, times));
         } else {
             fs::create_dir_all(path.parent().context("Missing archive entry parent")?)?;
             let mut file = fs::OpenOptions::new()
@@ -42,14 +43,14 @@ impl Unpacker<'_> {
                 .create_new(true)
                 .open(&path)?;
             io::copy(input, &mut file)?;
+            file.set_times(times)?;
         }
-        self.times.push((path, times));
         Ok(())
     }
     fn finish(mut self) -> Result<()> {
         // Restore directories last, after children have been created.
         self.times
-            .sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+            .sort_by_cached_key(|(path, _)| std::cmp::Reverse(path.components().count()));
         for (path, times) in self.times {
             fs::File::open(path)?.set_times(times)?;
         }

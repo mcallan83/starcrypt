@@ -10,11 +10,14 @@ use std::{collections::HashSet, path::Path};
 mod archive;
 mod archive_read;
 mod create;
+mod encrypt;
 mod extract;
 mod fsutil;
+mod progress;
 mod vault_read;
 
 pub use archive::ArchiveFormat;
+pub use progress::{Progress, ProgressSnapshot};
 
 /// Copy a folder's contents into a new password-protected Format 8 vault.
 /// The source must be a directory and the destination's parent must exist.
@@ -25,6 +28,16 @@ pub fn create_vault(
     destination: impl AsRef<Path>,
     password: &str,
 ) -> Result<()> {
+    create_vault_with_progress(source, destination, password, &Progress::default())
+}
+
+/// Run the operation with an optional shared progress handle.
+pub fn create_vault_with_progress(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: &str,
+    progress: &Progress,
+) -> Result<()> {
     ensure!(!password.is_empty(), "Password cannot be empty");
     let source = source
         .as_ref()
@@ -32,7 +45,7 @@ pub fn create_vault(
         .context("Cannot resolve source folder")?;
     ensure!(source.is_dir(), "Source must be a folder");
     let destination = fsutil::destination_path(destination.as_ref(), &source)?;
-    create::create(&source, &destination, password)
+    create::create_with_progress(&source, &destination, password, progress)
 }
 
 /// Package a new encrypted vault folder into a ZIP or 7z archive.
@@ -45,6 +58,17 @@ pub fn create_archive(
     password: &str,
     format: ArchiveFormat,
 ) -> Result<()> {
+    create_archive_with_progress(source, destination, password, format, &Progress::default())
+}
+
+/// Run the operation with an optional shared progress handle.
+pub fn create_archive_with_progress(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: &str,
+    format: ArchiveFormat,
+    progress: &Progress,
+) -> Result<()> {
     format.validate_destination(destination.as_ref())?;
     ensure!(!password.is_empty(), "Password cannot be empty");
     let source = source
@@ -53,7 +77,7 @@ pub fn create_archive(
         .context("Cannot resolve source folder")?;
     ensure!(source.is_dir(), "Source must be a folder");
     let destination = fsutil::destination_path(destination.as_ref(), &source)?;
-    archive::create_archive(&source, &destination, password, format)
+    archive::create_archive(&source, &destination, password, format, progress)
 }
 
 /// Decrypt a vault folder or a ZIP/7z containing one vault into a new folder. Detected failures remove partial output.
@@ -62,25 +86,45 @@ pub fn extract_vault(
     destination: impl AsRef<Path>,
     password: &str,
 ) -> Result<()> {
+    extract_vault_with_progress(vault, destination, password, &Progress::default())
+}
+
+/// Run the operation with an optional shared progress handle.
+pub fn extract_vault_with_progress(
+    vault: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: &str,
+    progress: &Progress,
+) -> Result<()> {
     ensure!(!password.is_empty(), "Password cannot be empty");
     let vault = vault
         .as_ref()
         .canonicalize()
         .context("Cannot resolve vault")?;
     let destination = fsutil::destination_path(destination.as_ref(), &vault)?;
+    progress.phase("Preparing decryption");
     let staging;
     let vault = if vault.is_file() {
         staging = tempfile::Builder::new()
             .prefix("starcrypt-unpack-")
             .tempdir()?;
+        progress.phase("Unpacking archive");
         archive_read::unpack(&vault, staging.path())
             .context("Cannot read archive as a Cryptomator vault")?
     } else {
         vault
     };
+    progress.phase("Unlocking vault");
     let ops = vault_read::open_vault(&vault, password)
         .context("Cannot unlock Cryptomator vault: invalid vault or incorrect password")?;
     fsutil::new_output(&destination, || {
-        extract::export(&ops, &DirId::root(), &destination, &mut HashSet::new())
+        progress.phase("Decrypting");
+        extract::export(
+            &ops,
+            &DirId::root(),
+            &destination,
+            &mut HashSet::new(),
+            progress,
+        )
     })
 }

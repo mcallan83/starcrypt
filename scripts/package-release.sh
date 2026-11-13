@@ -30,8 +30,7 @@ mkdir -p "$release_stage/$release_name/docs" "$release_stage/$release_name/tests
 cp "$release_binary" "$release_stage/$release_name/starcrypt"
 chmod 755 "$release_stage/$release_name/starcrypt"
 cp README.md LICENSE "$release_stage/$release_name/"
-cp docs/verification.md "$release_stage/$release_name/docs/"
-cp docs/releasing.md "$release_stage/$release_name/docs/"
+cp -R docs/. "$release_stage/$release_name/docs/"
 cp tests/interop/README.md "$release_stage/$release_name/tests/interop/"
 COPYFILE_DISABLE=1 tar -czf "$release_output" -C "$release_stage" "$release_name"
 (cd dist && shasum -a 256 "$release_name.tar.gz" > "$release_name.tar.gz.sha256")

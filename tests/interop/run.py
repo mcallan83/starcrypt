@@ -5,13 +5,15 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
-from fixtures import fixture
+from fixtures import RANDOM_SEED, fixture
 
 PROJECT = Path(__file__).resolve().parents[2]
 
@@ -34,18 +36,43 @@ def jdk_tools(home):
 
 
 def run(command, root, label, env=None, expected_success=True, expected_error=None):
-    result = subprocess.run(command, cwd=PROJECT, env=env, capture_output=True, text=True, timeout=600)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(command, cwd=PROJECT, env=env, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired as error:
+        def decoded(value):
+            return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
+        (root / (label + '.log')).write_text(decoded(error.stdout) + decoded(error.stderr) + '\nTIMED OUT\n')
+        save_stage(root, {'name': label, 'pass': False, 'exit_code': None,
+                          'seconds': round(time.monotonic() - started, 3), 'error': 'timeout'})
+        raise RuntimeError(f'{label}: timed out after 600 seconds') from error
     output = result.stdout + result.stderr
     (root / (label + '.log')).write_text(output)
+    failure = None
     if (result.returncode == 0) != expected_success:
-        print(output, file=sys.stderr)
-        raise RuntimeError(f'{label}: unexpected exit status {result.returncode}')
+        failure = f'unexpected exit status {result.returncode}'
     if expected_success and 'Invalid cipher text file size' in output:
-        raise RuntimeError(f'{label}: official implementation reported invalid ciphertext geometry')
+        failure = 'official implementation reported invalid ciphertext geometry'
     if expected_error and expected_error not in output:
-        raise RuntimeError(f'{label}: failed for an unexpected reason')
+        failure = 'failed for an unexpected reason'
+    record = {'name': label, 'pass': failure is None, 'exit_code': result.returncode,
+              'seconds': round(time.monotonic() - started, 3)}
+    if failure:
+        record['error'] = failure
+    save_stage(root, record)
+    if failure:
+        print(output, file=sys.stderr)
+        raise RuntimeError(f'{label}: {failure}')
     print(f'{label}: PASS', flush=True)
-    return {'name': label, 'pass': True, 'exit_code': result.returncode}
+    return record
+
+
+def save_stage(root, record):
+    path = root / 'summary.json'
+    previous = json.loads(path.read_text()) if path.exists() else {'checks': []}
+    checks = [*previous['checks'], record]
+    path.write_text(json.dumps({'pass': False, 'status': 'running' if record['pass'] else 'failed',
+                               'checks': checks}, indent=2) + '\n')
 
 
 def main():
@@ -72,6 +99,16 @@ def main():
                   for path in jars if path.name.startswith(('cryptofs-', 'cryptolib-', 'cryptomator-'))}
     (root / 'reference-libraries.json').write_text(json.dumps(jar_hashes, indent=2) + '\n')
     fixture(root / 'source')
+    source_files = [path for path in (root / 'source').rglob('*') if path.is_file() and not path.is_symlink()]
+    fingerprints = {str(path.relative_to(PROJECT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in [*sorted((PROJECT / 'src').glob('*.rs')), PROJECT / 'Cargo.toml', PROJECT / 'Cargo.lock',
+                                 *sorted(Path(__file__).parent.glob('*.py')), Path(__file__).with_name('StarcryptOracle.java'),
+                                 PROJECT / 'tests/official_reference.rs']}
+    (root / 'run-info.json').write_text(json.dumps({
+        'started_utc': datetime.now(timezone.utc).isoformat(), 'platform': platform.platform(),
+        'jdk_home': str(Path(java).parent.parent), 'fixture_random_seed': RANDOM_SEED,
+        'regular_files': len(source_files), 'plaintext_bytes': sum(path.stat().st_size for path in source_files),
+        'source_sha256': fingerprints}, indent=2) + '\n')
     case_values = [
         ('java-gcm', 'SIV_GCM', 'reference-café-🌎'),
         ('java-ctrmac', 'SIV_CTRMAC', 'reference-café-🌎'),
@@ -90,13 +127,19 @@ def main():
     (root / 'cases.json').write_text(json.dumps(cases, indent=2, ensure_ascii=False) + '\n')
     env = dict(os.environ, STARCRYPT_VERIFICATION_DIR=str(root))
     results.append(run(['cargo', 'test', '--test', 'official_reference', '--locked', '--offline',
-                        'official_java_reference_interoperability', '--', '--ignored', '--nocapture'],
+                        'official_java_reference_', '--', '--ignored', '--nocapture', '--test-threads=1'],
                        root, 'rust-official-reference', env))
     for case in cases:
         name = case['name']
         results.append(run([*oracle, 'verify', str(root / ('starcrypt-' + name)), str(root / 'source'),
                             'SIV_GCM', str(root / case['password_file']),
                             str(root / ('official-reads-' + name + '.json'))], root, 'official-reads-' + name))
+    corruptions = json.loads((root / 'rust-reference-corruption.json').read_text())
+    for case in corruptions:
+        label = 'official-rejects-' + case['name']
+        results.append(run([*oracle, 'reject-corrupt', str(root / case['vault']), str(root / 'source'),
+                            case['scheme'], str(root / case['password_file']),
+                            str(root / (label + '.json'))], root, label))
     wrong = root / 'wrong-password.txt'
     wrong.write_text('incorrect-disposable-test-password')
     results.append(run([*oracle, 'verify', str(root / 'starcrypt-java-gcm'), str(root / 'source'),
@@ -106,7 +149,7 @@ def main():
     results.append(run(['cargo', 'test', '--test', 'archive', '--locked', '--offline',
                         'seven_zip_encrypted_vault_round_trip'], root, 'seven-zip-round-trip', env))
     results.append(run(['cargo', 'build', '--release', '--locked', '--offline'], root, 'release-build', env))
-    (root / 'summary.json').write_text(json.dumps({'pass': True, 'checks': results,
+    (root / 'summary.json').write_text(json.dumps({'pass': True, 'status': 'complete', 'checks': results,
         'limits': ['Uses official Java libraries, not the desktop UI wizard.',
                    'Disk-full errors are fault-injected; the host disk is not filled.',
                    'Removing complete trailing chunks/files is not detectable from Format 8 alone.',

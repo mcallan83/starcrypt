@@ -29,6 +29,10 @@ The launcher validates its dependencies before creating any fixtures. It compile
 vaults with disposable passwords, runs the Rust public-API tests, and asks the
 official implementation to read Starcrypt output. It also runs the ordinary Rust
 suite (including ZIP and 7z round trips) and a locked release build.
+For both Java-created GCM and CTRMAC vaults, it corrupts a header, nonce, payload,
+tag, chunk order, and chunk index. Starcrypt must reject all twelve cases and
+remove incomplete plaintext output. The official Java reader must reject the same
+copies with an `AuthenticationFailedException`; unrelated failures do not pass.
 Independent archive-reader checks and the complete release checklist are in
 [docs/releasing.md](../../docs/releasing.md#checks).
 
@@ -36,15 +40,37 @@ All generated data goes into a fresh, ignored folder under `verification-results
 Use `--output NEW_PATH` to choose another new directory. Never use production vaults
 or real passwords as fixtures. Logs and JSON reports are retained for inspection.
 
+`summary.json` is updated after each stage, including failures and timeouts. A run
+passes only when its final status is `complete` and `pass` is true. `run-info.json`
+records the platform, JDK location, fixture seed, input sizes, and SHA-256
+fingerprints of the application and test sources; `reference-libraries.json`
+records the actual bundled Cryptomator library fingerprints. Stage durations and
+partial timeout output are retained for diagnosing failures.
+
+The fixture combines fixed boundary cases with 32 reproducible random files
+(seed `0x53544152`). It sweeps ASCII and multibyte UTF-8 filename lengths around
+the shortening threshold, and includes hidden files and names with spaces.
+The Java adapter streams imports and byte comparisons instead of loading whole
+files into memory.
+
 Files:
 
 - `StarcryptOracle.java`: official-library vault creation and complete byte/link comparisons.
-- `fixtures.py`: deterministic boundary-size, Unicode, long-name, and symlink fixtures.
+- `fixtures.py`: deterministic 32 KiB chunk and 1 MiB worker-batch boundaries,
+  Unicode, deeply nested shortened names, and symlink fixtures.
 - `run.py`: JDK preflight, compilation, execution, and reports.
+- `test_runner.py`: launcher checks for unexpected success, wrong failure reasons,
+  invalid ciphertext geometry, and timeout reporting.
 - `compare.py`: optional manual desktop/WebDAV fixture, snapshot, and comparison tool.
 
 The normal Rust tests need neither a JDK nor Cryptomator:
 
 ```sh
 cargo test --locked
+```
+
+Test the launcher's failure handling without Java or Cryptomator:
+
+```sh
+python3 -m unittest discover -s tests/interop -p 'test_*.py'
 ```

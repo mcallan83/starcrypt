@@ -85,6 +85,14 @@ fn standard_shortened_names_round_trip() -> Result<()> {
     fs::write(source.join(&boundary), b"boundary")?;
     fs::create_dir(source.join(&long_directory))?;
     fs::write(source.join(&long_directory).join("child"), b"nested")?;
+    fs::create_dir(source.join(&long_directory).join(&long_directory))?;
+    fs::write(
+        source
+            .join(&long_directory)
+            .join(&long_directory)
+            .join(&boundary),
+        b"deep shortened file",
+    )?;
     let vault = temp.path().join("vault");
     create_vault(&source, &vault, "test password")?;
     let ops = VaultOperations::open(&vault, "test password")?;
@@ -100,10 +108,19 @@ fn standard_shortened_names_round_trip() -> Result<()> {
     }
     let output = temp.path().join("output");
     extract_vault(&vault, &output, "test password")?;
-    assert_eq!(fs::read(output.join(boundary))?, b"boundary");
+    assert_eq!(fs::read(output.join(&boundary))?, b"boundary");
     assert_eq!(
-        fs::read(output.join(long_directory).join("child"))?,
+        fs::read(output.join(&long_directory).join("child"))?,
         b"nested"
+    );
+    assert_eq!(
+        fs::read(
+            output
+                .join(&long_directory)
+                .join(&long_directory)
+                .join(&boundary)
+        )?,
+        b"deep shortened file"
     );
     Ok(())
 }
@@ -160,5 +177,78 @@ fn symlinks_round_trip_without_following_targets() -> Result<()> {
     }
     assert_eq!(fs::read(output.join("file"))?, b"hello");
     assert!(!temp.path().join("outside").exists());
+    Ok(())
+}
+
+#[test]
+fn parallel_creation_streams_chunk_boundaries() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("nested"))?;
+    let sizes = [0, 1, 32_767, 32_768, 32_769, 65_536, 65_537, 2_000_003];
+    for (index, size) in sizes.into_iter().cycle().take(48).enumerate() {
+        let bytes = (0..size)
+            .map(|n| ((n + index) % 251) as u8)
+            .collect::<Vec<_>>();
+        let name = if index % 2 == 0 {
+            format!("nested/file-{index}")
+        } else {
+            format!("file-{index}")
+        };
+        fs::write(source.join(name), bytes)?;
+    }
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    let output = temp.path().join("output");
+    extract_vault(&vault, &output, "test password")?;
+    for index in 0..48 {
+        let name = if index % 2 == 0 {
+            format!("nested/file-{index}")
+        } else {
+            format!("file-{index}")
+        };
+        assert_eq!(
+            fs::read(source.join(&name))?,
+            fs::read(output.join(&name))?,
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn progress_counts_completed_plaintext_and_regular_files() -> Result<()> {
+    use starcrypt::{Progress, create_vault_with_progress, extract_vault_with_progress};
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("empty-directory"))?;
+    fs::write(source.join("empty"), [])?;
+    fs::write(source.join("large"), vec![7; 2 * 1024 * 1024 + 19])?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(".", source.join("directory-link"))?;
+    let vault = temp.path().join("vault");
+    let encrypting = Progress::default();
+    create_vault_with_progress(&source, &vault, "test password", &encrypting)?;
+    assert_eq!(encrypting.snapshot().bytes, 2 * 1024 * 1024 + 19);
+    assert_eq!(encrypting.snapshot().files, 2);
+    assert_eq!(
+        encrypting.snapshot().total_bytes,
+        Some(2 * 1024 * 1024 + 19)
+    );
+    assert_eq!(encrypting.snapshot().total_files, Some(2));
+    let decrypting = Progress::default();
+    extract_vault_with_progress(
+        &vault,
+        temp.path().join("output"),
+        "test password",
+        &decrypting,
+    )?;
+    assert_eq!(decrypting.snapshot().bytes, encrypting.snapshot().bytes);
+    assert_eq!(decrypting.snapshot().files, 2);
+    assert_eq!(
+        decrypting.snapshot().total_bytes,
+        encrypting.snapshot().total_bytes
+    );
+    assert_eq!(decrypting.snapshot().total_files, Some(2));
     Ok(())
 }

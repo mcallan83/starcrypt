@@ -22,6 +22,7 @@ include = [
 ]
 
 [dependencies]
+aes-gcm = "=0.10.3"
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive"] }
 oxcrypt-core = { git = "https://github.com/agucova/oxcrypt", rev = "916864f66184dae6f97b0e97e02b879144fcfed6", default-features = false, features = ["async"] }
@@ -34,6 +35,7 @@ tempfile = "=3.27.0"
 time = "=0.3.55"
 zip = { version = "=9.5.1", default-features = false, features = ["time", "deflate-flate2-zlib-rs"] }
 sevenz-rust2 = { version = "=0.25.0", default-features = false, features = ["compress", "util"] }
+indicatif = "=0.18.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

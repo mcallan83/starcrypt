@@ -2,7 +2,7 @@
 
 <img src="docs/assets/icon.png" alt="StarCrypt icon" width="160">
 
-StarCrypt is a fast, lightweight command-line tool for creating and extracting Cryptomator-compatible encrypted vaults. Encrypt entire directories without Java, FUSE, WebDAV, volume mounting, or background services.
+StarCrypt is a fast, lightweight command-line tool for creating and extracting [Cryptomator](https://cryptomator.org/) encrypted vaults. Encrypt entire directories without Java, FUSE, WebDAV, volume mounting, or background services.
 
 Designed for simplicity and automation, StarCrypt uses multithreaded processing with low memory overhead while preserving original files and timestamps.
 
@@ -60,13 +60,27 @@ starcrypt extract ~/Backups/photos-vault.zip ~/Desktop/restored-photos
 starcrypt extract ~/Backups/photos-vault.7z ~/Desktop/restored-photos
 ```
 
-StarCrypt automatically locates, validates, and unlocks the vault using its password.
+StarCrypt validates and unlocks the vault using its password.
 
-Archives must contain exactly one valid Cryptomator vault. Corrupt archives, multiple vaults, unsafe paths, archive symlinks, and separately password-protected archives are rejected.
+
+### Automated Password Input
+
+When stdin is a terminal, StarCrypt prompts for a password and confirms it when creating a vault. When stdin is piped or redirected, it reads the first line as the password without prompting or confirmation. A trailing LF or CRLF newline is removed; other whitespace is preserved. Empty input fails immediately.
+
+```sh
+# Read from a password file
+starcrypt create ./photos ./vault < /secure/password.txt
+starcrypt extract ./vault ./restored < /secure/password.txt
+
+# Read directly from 1Password CLI
+op read 'op://Private/StarCrypt/password' | starcrypt create ./photos ./vault
+```
+
+
 
 ### Cryptomator Compatibility
 
-Vaults created by StarCrypt can be opened in the official Cryptomator desktop application.
+Vaults created by StarCrypt can be opened in the official Cryptomator applications.
 
 For ZIP or 7z archives, unpack the archive first, then open the extracted `vault.cryptomator` file in Cryptomator.
 

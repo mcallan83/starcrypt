@@ -5,7 +5,7 @@ use starcrypt::{
     extract_vault_with_progress,
 };
 use std::{
-    io::{IsTerminal, Write},
+    io::{BufRead, IsTerminal, Write},
     path::PathBuf,
     sync::mpsc,
     thread,
@@ -94,12 +94,31 @@ fn main() -> Result<()> {
 }
 
 fn password(confirm: bool) -> Result<Zeroizing<String>> {
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return password_from_reader(stdin.lock());
+    }
     let password = Zeroizing::new(rpassword::prompt_password("Vault password: ")?);
     ensure!(!password.is_empty(), "Password cannot be empty");
     if confirm {
         let repeat = Zeroizing::new(rpassword::prompt_password("Confirm password: ")?);
         ensure!(*password == *repeat, "Passwords do not match");
     }
+    Ok(password)
+}
+
+fn password_from_reader(mut reader: impl BufRead) -> Result<Zeroizing<String>> {
+    let mut password = Zeroizing::new(String::new());
+    reader
+        .read_line(&mut password)
+        .context("Cannot read password from stdin")?;
+    if password.ends_with('\n') {
+        password.pop();
+        if password.ends_with('\r') {
+            password.pop();
+        }
+    }
+    ensure!(!password.is_empty(), "Password from stdin cannot be empty");
     Ok(password)
 }
 

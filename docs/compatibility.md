@@ -1,4 +1,4 @@
-# Compatibility and limitations
+# Compatibility
 
 Starcrypt creates Format 8 `SIV_GCM` vaults and reads `SIV_GCM` and legacy
 `SIV_CTRMAC` vaults. ZIP and 7z archives use native Rust libraries.

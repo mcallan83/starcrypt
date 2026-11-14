@@ -35,7 +35,7 @@ That launcher generates fixtures, checks interoperability in both directions,
 runs the default Rust suite, and builds the release executable. It does not run
 the independent archive-reader test, formatting, or Clippy. Missing tools must
 not count as passing checks. Desktop UI/WebDAV checks are manual and are not
-covered by either command. See [compatibility and limitations](verification.md).
+covered by either command. See [compatibility and limitations](compatibility.md).
 
 Build the release executable separately when running only the Rust suite:
 
@@ -65,7 +65,7 @@ scripts/package-release.sh x86_64-apple-darwin
 
 This creates `dist/starcrypt-VERSION-TARGET.tar.gz` and a `.sha256` checksum, refusing
 existing output. The archive contains the executable, README, MIT license,
-verification documentation, and the test setup guide. It excludes source
+compatibility documentation, and the test setup guide. It excludes source
 fixtures, disposable test-password files, compiler output, caches, and Python/Java
 test tools. Packaging does
 not publish a release. Artifacts are unsigned; signing/notarization is not configured.

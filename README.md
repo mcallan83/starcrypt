@@ -2,9 +2,11 @@
 
 <img src="docs/assets/icon.png" alt="StarCrypt icon" width="160">
 
-StarCrypt is a fast, lightweight command-line tool for creating and extracting [Cryptomator](https://cryptomator.org/) encrypted vaults. Encrypt entire directories without Java, FUSE, WebDAV, volume mounting, or background services.
+StarCrypt is a fast, lightweight command-line tool for creating and extracting [Cryptomator](https://cryptomator.org/) encrypted vaults.
 
-Designed for simplicity and automation, StarCrypt uses multithreaded processing with low memory overhead while preserving original files and timestamps.
+Cryptomator's desktop app provides a graphical way to work with vaults. On macOS, files in a vault are accessed through a mounted volume, typically via WebDAV or FUSE. That workflow can add overhead with large vaults and may not preserve original timestamps.
+
+StarCrypt offers a complementary command-line workflow: it creates and extracts Cryptomator-compatible vaults directly, without mounting them, and while preserving file timestamps. Multithreaded processing and low memory use make it well suited to large directories.
 
 ## Features
 
@@ -34,29 +36,43 @@ cargo install --path . --locked
 
 ### Create a Vault
 
+Standard Cryptomator vault:
+
 ```sh
-# Standard Cryptomator vault
 starcrypt create ~/Documents/photos ~/Backups/photos-vault
+```
 
-# ZIP archive
+ZIP archive:
+
+```sh
 starcrypt create ~/Documents/photos ~/Backups/photos-vault.zip --zip
+```
 
-# 7z archive
+7z archive:
+
+```sh
 starcrypt create ~/Documents/photos ~/Backups/photos-vault.7z --7z
 ```
 
-The `--zip` and `--7z` options package a standard encrypted Cryptomator vault into an archive. **Archives contain encrypted data, never the original plaintext files.**
+The `--zip` and `--7z` options package an encrypted Cryptomator vault into a single archive. The archive is not separately encrypted or password-protected; encryption is provided by the vault itself. These options change only how the vault is packaged, making it easier to store or transfer as one file rather than a folder of many files.
 
 ### Extract a Vault
 
+Standard Cryptomator vault:
+
 ```sh
-# Standard Cryptomator vault
 starcrypt extract ~/Backups/photos-vault ~/Desktop/restored-photos
+```
 
-# ZIP archive
+ZIP archive:
+
+```sh
 starcrypt extract ~/Backups/photos-vault.zip ~/Desktop/restored-photos
+```
 
-# 7z archive
+7z archive:
+
+```sh
 starcrypt extract ~/Backups/photos-vault.7z ~/Desktop/restored-photos
 ```
 
@@ -65,7 +81,7 @@ StarCrypt validates and unlocks the vault using its password.
 
 ### Automated Password Input
 
-When stdin is a terminal, StarCrypt prompts for a password and confirms it when creating a vault. When stdin is piped or redirected, it reads the first line as the password without prompting or confirmation. A trailing LF or CRLF newline is removed; other whitespace is preserved. Empty input fails immediately.
+By default, StarCrypt prompts for a password when creating or extracting a vault. If stdin is piped or redirected, it reads the first line as the password instead, without prompting or confirmation. A trailing LF or CRLF is removed; other whitespace is preserved. Empty input is rejected.
 
 ```sh
 # Read from a password file
@@ -76,13 +92,13 @@ starcrypt extract ./vault ./restored < /secure/password.txt
 op read 'op://Private/StarCrypt/password' | starcrypt create ./photos ./vault
 ```
 
-
-
 ### Cryptomator Compatibility
 
-Vaults created by StarCrypt can be opened in the official Cryptomator applications.
+Vaults created by StarCrypt can be opened in the official Cryptomator application.
 
-For ZIP or 7z archives, unpack the archive first, then open the extracted `vault.cryptomator` file in Cryptomator.
+For ZIP or 7z archives, manually unpack the archive first, then open the extracted `vault.cryptomator` file in Cryptomator.
+
+See [compatibility](docs/compatibility.md) for more information.
 
 ## Temporary Storage
 

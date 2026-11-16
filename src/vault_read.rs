@@ -4,6 +4,8 @@ use anyhow::{Context, Result, ensure};
 use oxcrypt_core::{
     fs::name::create_c9s_filename,
     vault::{
+        config::validate_vault_claims,
+        master_key::MasterKeyFile,
         operations::{DirEntry, VaultOperations},
         path::DirId,
     },
@@ -17,8 +19,56 @@ use oxcrypt_core::{
 };
 use std::{
     fs,
+    io::Read,
     path::{Component, Path},
 };
+
+const MAX_METADATA_BYTES: u64 = 64 * 1024;
+// Includes scrypt's V, B and T buffers with the dependency's fixed p = 1.
+const MAX_SCRYPT_MEMORY: u64 = 256 * 1024 * 1024;
+
+fn read_metadata(path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_METADATA_BYTES,
+        "Vault metadata exceeds the 64 KiB limit: {}",
+        path.display()
+    );
+    Ok(bytes)
+}
+
+fn validate_master_key(key: &MasterKeyFile) -> Result<()> {
+    let n = u32::try_from(key.scrypt_cost_param).unwrap_or(0);
+    let r = u32::try_from(key.scrypt_block_size).unwrap_or(0);
+    ensure!(
+        n >= 2 && n.is_power_of_two(),
+        "Invalid scryptCostParam: must be a power of two greater than one"
+    );
+    ensure!(r > 0, "Invalid scryptBlockSize: must be positive");
+    ensure!(
+        u64::from(n.ilog2()) < 16 * u64::from(r) && r < 0x4000_0000,
+        "Invalid scrypt parameters"
+    );
+    let memory = u64::from(n)
+        .checked_add(2)
+        .and_then(|blocks| blocks.checked_mul(u64::from(r)))
+        .and_then(|blocks| blocks.checked_mul(128))
+        .context("Scrypt memory requirement overflow")?;
+    ensure!(
+        memory <= MAX_SCRYPT_MEMORY,
+        "Scrypt resource limit exceeded: estimated working buffers require {memory} bytes (limit: {MAX_SCRYPT_MEMORY} bytes)"
+    );
+    ensure!(!key.scrypt_salt.is_empty(), "Missing scrypt salt");
+    ensure!(
+        key.primary_master_key.len() == 40 && key.hmac_master_key.len() == 40,
+        "Invalid wrapped master-key length"
+    );
+    ensure!(key.version_mac.len() == 32, "Invalid version MAC length");
+    Ok(())
+}
 
 fn ordinary_metadata(path: &Path) -> Result<fs::Metadata> {
     let metadata = fs::symlink_metadata(path)?;
@@ -35,7 +85,7 @@ pub(super) fn open_vault(vault: &Path, password: &str) -> Result<VaultOperations
         ordinary_metadata(&vault.join("vault.cryptomator"))?.is_file(),
         "Vault configuration is not a regular file"
     );
-    let config = fs::read_to_string(vault.join("vault.cryptomator"))?;
+    let config = String::from_utf8(read_metadata(&vault.join("vault.cryptomator"))?)?;
     let header = jsonwebtoken::decode_header(&config)?;
     let kid = header.kid.context("Missing master-key location")?;
     let path = Path::new(
@@ -53,10 +103,22 @@ pub(super) fn open_vault(vault: &Path, password: &str) -> Result<VaultOperations
         ordinary_metadata(&key_path)?;
     }
     ensure!(
-        fs::metadata(key_path)?.is_file(),
+        fs::metadata(&key_path)?.is_file(),
         "Master key is not a regular file"
     );
-    Ok(VaultOperations::open(vault, password)?)
+    let key: MasterKeyFile = serde_json::from_slice(&read_metadata(&key_path)?)
+        .context("Invalid master-key metadata")?;
+    validate_master_key(&key)?;
+    // Unlock precisely the data validated above, without reopening metadata via
+    // VaultOperations::open (which also interprets the key location differently).
+    let master_key = key.unlock(password)?;
+    let claims = validate_vault_claims(&config, &master_key)?;
+    Ok(VaultOperations::with_options(
+        vault,
+        master_key,
+        claims.shortening_threshold(),
+        claims.cipher_combo().context("Unsupported vault cipher")?,
+    ))
 }
 
 pub(super) fn validate_file_size(size: u64, cipher: CipherCombo) -> Result<()> {
@@ -207,4 +269,48 @@ pub(super) fn strict_list(ops: &VaultOperations, id: &DirId) -> Result<Vec<DirEn
         }
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxcrypt_core::{crypto::keys::MasterKey, vault::master_key::create_masterkey_file};
+
+    #[test]
+    fn scrypt_resource_boundaries_are_checked_without_deriving_keys() -> Result<()> {
+        let mut key: MasterKeyFile = serde_json::from_str(&create_masterkey_file(
+            &MasterKey::random()?,
+            "test password",
+        )?)?;
+        for (n, r) in [(2, 1), (32768, 8), (131072, 8), (2, 524288)] {
+            key.scrypt_cost_param = n;
+            key.scrypt_block_size = r;
+            validate_master_key(&key)?;
+        }
+        // Exactly 256 MiB of working buffers is accepted; the next block is not.
+        key.scrypt_block_size = 524289;
+        assert!(
+            validate_master_key(&key)
+                .unwrap_err()
+                .to_string()
+                .contains("Scrypt resource limit exceeded")
+        );
+        key.scrypt_cost_param = 1 << 30;
+        key.scrypt_block_size = 1 << 29;
+        assert!(
+            validate_master_key(&key)
+                .unwrap_err()
+                .to_string()
+                .contains("Scrypt memory requirement overflow")
+        );
+        key.scrypt_cost_param = 65536;
+        key.scrypt_block_size = 1;
+        assert!(
+            validate_master_key(&key)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid scrypt parameters")
+        );
+        Ok(())
+    }
 }

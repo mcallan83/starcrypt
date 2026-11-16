@@ -18,6 +18,13 @@ the Java suite does not exercise them.
 
 ## Limitations
 
+- Vault configuration and master-key metadata files are limited to 64 KiB each.
+  Scrypt requires a positive block size and a power-of-two cost greater than one.
+  StarCrypt rejects settings whose estimated scrypt working buffers exceed
+  256 MiB before attempting password derivation. Standard Cryptomator settings
+  (`N = 32768`, `r = 8`, `p = 1`) use approximately 32 MiB. Valid vaults with
+  more expensive custom settings may exceed this supported resource limit.
+
 - Format 8 cannot detect deletion of complete files or whole trailing chunks
   without a separate trusted inventory or backup hashes.
 - Extraction does not restore permissions, ownership, creation dates, extended

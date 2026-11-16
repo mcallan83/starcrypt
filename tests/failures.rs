@@ -3,6 +3,121 @@ use starcrypt::{ArchiveFormat, create_archive, create_vault};
 use std::fs;
 
 #[test]
+fn malformed_master_key_metadata_exits_normally_without_output() -> Result<()> {
+    use serde_json::json;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    fs::write(source.join("payload"), b"original")?;
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    let key_path = vault.join("masterkey.cryptomator");
+    let original = fs::read(&key_path)?;
+    let baseline: serde_json::Value = serde_json::from_slice(&original)?;
+    for (index, (field, value, message)) in [
+        ("scryptCostParam", json!(0), "Invalid scryptCostParam"),
+        ("scryptCostParam", json!(-1), "Invalid scryptCostParam"),
+        ("scryptCostParam", json!(1), "Invalid scryptCostParam"),
+        ("scryptCostParam", json!(3), "Invalid scryptCostParam"),
+        (
+            "scryptCostParam",
+            json!(1 << 30),
+            "Scrypt resource limit exceeded",
+        ),
+        (
+            "scryptCostParam",
+            json!(4294967296u64),
+            "Invalid master-key metadata",
+        ),
+        ("scryptCostParam", json!(1.5), "Invalid master-key metadata"),
+        (
+            "scryptCostParam",
+            json!("32768"),
+            "Invalid master-key metadata",
+        ),
+        (
+            "scryptCostParam",
+            json!(null),
+            "Invalid master-key metadata",
+        ),
+        ("scryptBlockSize", json!(0), "Invalid scryptBlockSize"),
+        ("scryptBlockSize", json!(-1), "Invalid scryptBlockSize"),
+        (
+            "scryptBlockSize",
+            json!(1 << 28),
+            "Scrypt resource limit exceeded",
+        ),
+        (
+            "scryptBlockSize",
+            json!(i32::MAX),
+            "Invalid scrypt parameters",
+        ),
+        (
+            "primaryMasterKey",
+            json!(""),
+            "Invalid wrapped master-key length",
+        ),
+        ("versionMac", json!(""), "Invalid version MAC length"),
+        ("scryptSalt", json!(""), "Missing scrypt salt"),
+        (
+            "scryptSalt",
+            json!("not base64!"),
+            "Invalid master-key metadata",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut key = baseline.clone();
+        key[field] = value;
+        fs::write(&key_path, serde_json::to_vec(&key)?)?;
+        let output = temp.path().join(format!("output-{index}"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_starcrypt"))
+            .arg("extract")
+            .arg(&vault)
+            .arg(&output)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child.stdin.take().unwrap().write_all(b"test password\n")?;
+        let result = child.wait_with_output()?;
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        ensure!(result.status.code() == Some(1), "Unexpected exit: {stderr}");
+        ensure!(stderr.contains(message), "Expected {message}: {stderr}");
+        ensure!(!stderr.contains("panicked"), "{stderr}");
+        ensure!(!output.exists());
+    }
+    fs::write(&key_path, &original)?;
+    let restored = temp.path().join("valid-output");
+    starcrypt::extract_vault(&vault, &restored, "test password")?;
+    ensure!(fs::read(restored.join("payload"))? == b"original");
+    Ok(())
+}
+
+#[test]
+fn oversized_vault_metadata_is_rejected_before_unlocking() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    for name in ["masterkey.cryptomator", "vault.cryptomator"] {
+        let path = vault.join(name);
+        let original = fs::read(&path)?;
+        fs::write(&path, vec![b' '; 64 * 1024 + 1])?;
+        let output = temp.path().join(format!("output-{name}"));
+        let error = starcrypt::extract_vault(&vault, &output, "test password").unwrap_err();
+        ensure!(format!("{error:#}").contains("Vault metadata exceeds the 64 KiB limit"));
+        ensure!(!output.exists());
+        fs::write(path, original)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn unsafe_internal_archive_names_are_rejected_without_output() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");

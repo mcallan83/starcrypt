@@ -1,0 +1,37 @@
+{
+  "scheme": "SIV_GCM",
+  "checked": [
+    {
+      "type": "file",
+      "name": "boundary"
+    },
+    {
+      "type": "file",
+      "name": "empty"
+    },
+    {
+      "type": "file",
+      "name": "long-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "type": "directory",
+      "name": "nested"
+    },
+    {
+      "type": "symlink",
+      "name": "relative-link"
+    },
+    {
+      "type": "file",
+      "name": "nested/café 🌎"
+    },
+    {
+      "type": "directory",
+      "name": "nested/empty"
+    }
+  ],
+  "java_version": "26.0.2.1",
+  "action": "verify",
+  "corruption_rejected": false,
+  "pass": true
+}

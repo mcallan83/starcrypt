@@ -52,6 +52,39 @@ class RunnerFailureTests(unittest.TestCase):
             self.assertEqual(summary['status'], 'failed')
             self.assertEqual(summary['checks'][0]['error'], 'timeout')
 
+class RunnerAdditionalFailureTests(unittest.TestCase):
+    def test_launch_failure_is_recorded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch('run.subprocess.run', side_effect=FileNotFoundError('missing-test-tool')):
+                with self.assertRaisesRegex(RuntimeError, 'cannot launch command'):
+                    run(['missing-test-tool'], root, 'launch-error')
+            summary = json.loads((root / 'summary.json').read_text())
+            self.assertEqual(summary['status'], 'failed')
+            self.assertIsNone(summary['checks'][0]['exit_code'])
+            self.assertIn('missing-test-tool', (root / 'launch-error.log').read_text())
+
+    def test_fixture_failure_marks_entire_run_failed(self):
+        from run import main
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'results'
+            app = root / 'Cryptomator.app'
+            mods = app / 'Contents/app/mods'
+            mods.mkdir(parents=True)
+            (mods / 'cryptofs-test.jar').write_bytes(b'not-used-by-mocked-compiler')
+            with patch('sys.argv', ['run.py', '--output', str(output), '--cryptomator-app', str(app)]), \
+                 patch('run.jdk_tools', return_value=('test-javac', 'test-java')), \
+                 patch('run.shutil.which', return_value='/test/tool'), \
+                 patch('run.run', return_value={'name': 'compile-oracle', 'pass': True}), \
+                 patch('run.fixture', side_effect=RuntimeError('fixture setup failed')):
+                with self.assertRaisesRegex(RuntimeError, 'fixture setup failed'):
+                    main()
+            summary = json.loads((output / 'summary.json').read_text())
+            self.assertFalse(summary['pass'])
+            self.assertEqual(summary['status'], 'failed')
+            self.assertIn('fixture setup failed', summary['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

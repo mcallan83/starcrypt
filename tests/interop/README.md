@@ -11,6 +11,7 @@ Requirements for the verified Cryptomator 1.19.6 library set:
   JDK version; the launcher deliberately rejects other compiler versions.
 - Cryptomator at `/Applications/Cryptomator.app`, or `--cryptomator-app PATH`.
 - Python 3 and Rust with the locked dependencies available locally.
+- `unzip` and `7zz` on `PATH` for independent archive packaging and extraction.
 
 Set `JAVA_HOME` to the full JDK installation and run from the project root:
 
@@ -74,3 +75,65 @@ Test the launcher's failure handling without Java or Cryptomator:
 ```sh
 python3 -m unittest discover -s tests/interop -p 'test_*.py'
 ```
+
+## Additional compatibility checks
+
+The oracle compares modification times for regular files and directories at
+millisecond precision. Symlink timestamps and access times are deliberately not
+asserted: provider support differs, and reads can update access times. ZIP paths
+use two-second comparison buckets to accommodate DOS timestamps from independent
+writers; vault folders and 7z paths retain millisecond assertions.
+
+Java edits existing GCM and CTRMAC vaults: overwrites, appends, truncation to zero
+and across chunk boundaries, renames to shortened names, directory moves,
+deletions, new files/directories, and symlinks. A fresh Java process reopens each
+vault, then Starcrypt extracts and compares its complete tree and timestamps.
+The GCM starting vault is created by Starcrypt; the CTRMAC starting vault comes
+from the official implementation because Starcrypt creates GCM vaults.
+
+Starcrypt ZIP and 7z archives are unpacked by `unzip`/`7zz` and opened by the
+official Java reader. Java-created vaults are also packaged with `7zz` in both
+formats, then extracted by Starcrypt. These supplement the ordinary archive
+round-trip tests rather than substituting one archive library for another.
+
+Metadata corruption checks independently alter JWT signatures and both wrapped
+master keys for both cipher suites. Starcrypt must reject them with the expected
+authentication error and remove its output; Java must fail with the expected
+signature/password exception. Negative oracle checks also require rejection of
+a mismatched requested cipher and an unexpected, correctly signed key identifier.
+
+## Frozen historical fixtures
+
+`reference/` contains small Format 8 vaults generated with unmodified official
+**CryptoFS 2.9.0 and Cryptolib 2.2.1**, independent of the installed current app.
+These are historical library releases, not a claim that an older desktop UI was
+exercised. Supporting libraries are recorded separately in the manifest.
+
+Both GCM and CTRMAC fixtures include empty and chunk-boundary files, Unicode,
+a shortened filename, nested and empty directories, and a relative symlink.
+They are verified by the official reader after closing and reopening the vault.
+The regular Rust suite extracts these fixtures and checks the complete tree and
+wrong-password cleanup without requiring Java (on Unix). Python checks validate
+archive hashes and the saved oracle reports.
+
+The files contain only disposable public test data and public fixture passwords.
+`manifest.json` records the producer, all JAR hashes, generator/oracle source
+hashes, and archive hashes. Preserve these archives across future oracle changes;
+do not regenerate them merely to make a failing compatibility test pass.
+
+For intentional regeneration into a **new directory**, download the official
+JARs from Maven Central and use:
+
+```sh
+python3 tests/interop/freeze_reference.py \
+  --jdk-home /path/to/jdk/Contents/Home \
+  --cryptofs /path/to/cryptofs-2.9.0.jar \
+  --cryptolib /path/to/cryptolib-2.2.1.jar \
+  --support-jars /Applications/Cryptomator.app/Contents/app/mods \
+  --output /path/to/new-reference
+```
+
+The generator compiles the adapter against the explicitly supplied older
+CryptoFS/Cryptolib JARs, excluding their current equivalents from the support
+classpath. It generates and reopens both vaults before saving the archives and
+provenance. Random keys make regenerated archives bytewise different.

@@ -1,0 +1,72 @@
+{
+  "format": 8,
+  "producer": [
+    "cryptofs-2.9.0.jar",
+    "cryptolib-2.2.1.jar"
+  ],
+  "cases": [
+    {
+      "archive": "gcm.zip",
+      "scheme": "SIV_GCM",
+      "password": "historical-public-test-password",
+      "sha256": "dbc0950725f2d3675044a5cfdf368e2e292a4b47c453dd077693723c635bc523"
+    },
+    {
+      "archive": "ctrmac.zip",
+      "scheme": "SIV_CTRMAC",
+      "password": "historical-public-test-password",
+      "sha256": "ef341bba32dccccfeafc8600120bc976821554978f5e1eb02b66aa67883a4d4c"
+    }
+  ],
+  "generator_sha256": {
+    "freeze_reference.py": "d5080e67b4a9c23512f0c5963886718f559185a2e47e21875c8bd3697e93fac4",
+    "StarcryptOracle.java": "5007d65292220d2d42b194f4101f4eff1bfca6768ea99c68d057520664230d03"
+  },
+  "libraries_sha256": {
+    "cryptofs-2.9.0.jar": "98a40fd57004b323fcc3b57a8d0e889bae20c9489aa8eeaafc1eebb3357e7c55",
+    "cryptolib-2.2.1.jar": "e9dabc036e086f4d06bb0a23d0d6b5fd83f7723622018790b6e9a06d3e2fa64b",
+    "caffeine-3.3.1.jar": "1f916d052a3f8c0c10951f343f043f176ff2d3c2f9e380e15f0be673c5e67c48",
+    "commons-lang3-3.21.0.jar": "a2af247ec4db6eb8947e18e23e0433e4871a7c5d0a40e1f92e46ede54ae1defe",
+    "dagger-2.60.1.jar": "b012d0df527b51bfcd8953d5fcb4d022a45ebe66010d6f181ede68d1572b5cb2",
+    "easybind-2.2.jar": "37cbca1b23e4d4910d4c49cba4640d7d12816941c1317b4e916db86b138ad6f1",
+    "error_prone_annotations-2.50.0.jar": "4667724877f1d37a689202da191e23efa7657c62eef93ccdac406eccfe5cdd0a",
+    "failureaccess-1.0.3.jar": "cbfc3906b19b8f55dd7cfd6dfe0aa4532e834250d7f080bd8d211a3e246b59cb",
+    "fuse-nio-adapter-7.0.0.jar": "39eb15ca4fdab461af692cdae245e75dac80207b9cbcfa5637adc4c8d8f80ffd",
+    "gson-2.14.0.jar": "2cbd119bf1961c28788310963dc80ba65f58cdeec1dd139c8bdb1240faa2c36f",
+    "guava-33.5.0-jre.jar": "1e301f0c52ac248b0b14fdc3d12283c77252d4d6f48521d572e7d8c4c2cc4ac7",
+    "integrations-api-1.10.0.jar": "5207dfa7a872de9e2dc29be9da5d2c1c86d89d0ac884649fb3047078d47fa6ee",
+    "integrations-mac-1.5.1.jar": "125c3b870a3438ba6bfee52a8304c87bbe6f64321c7df1dbf5e0e86293466121",
+    "j2objc-annotations-3.1.jar": "84d3a150518485f8140ea99b8a985656749629f6433c92b80c75b36aba3b099b",
+    "jackson-annotations-2.21.jar": "53ca085f4a150f703f49e1aabd935bd03b43e1ea3d55d135438292af22cef56b",
+    "jackson-core-2.21.8.jar": "604ef7765013daf5cde192e40bc4c8412c4ca93f4aaf7bf8e9a62fad1e1026bb",
+    "jackson-databind-2.21.8.jar": "ad77f2285717e2f34c319d988b7c85783a47d0b33f33a501d1fcbf196e61bbaa",
+    "jackson-datatype-jsr310-2.21.8.jar": "63a0854504aa90ed8f34f891aaa5259f9bd622bac115323559a38abdc1e81632",
+    "jakarta.inject-api-2.0.1.jar": "f7dc98062fccf14126abb751b64fab12c312566e8cbdc8483598bffcea93af7c",
+    "java-jwt-4.6.2.jar": "41b24ee7d9268ce2a14000049901334129d003788993f760a9dd6ccd9381e943",
+    "javax.inject-1.jar": "91c77044a50c481636c32d916fd89c9118a72195390452c81065080f957de7ff",
+    "jetty-http-10.0.26.jar": "7d249c0c5a1b187060309ebdbe0845e315914c3aab294886b63b55fa56e2aa87",
+    "jetty-io-10.0.26.jar": "6e2274dc5468290d7a9d99806ffeeb3045464b913a3ef3ac048cfbde95edc4ff",
+    "jetty-security-10.0.26.jar": "473ef1e51aecddb5e349b660110885b9f9ba21819ac48d85d58ba55e37c625ed",
+    "jetty-server-10.0.26.jar": "eebae11dc2742da271237b5a47f52f473db3ec3ccf61fe44a081e8b33655ac9b",
+    "jetty-servlet-10.0.26.jar": "9b8f31ecf2edc5e23a40bd110a6350c68a712e1fa867bd37d7abe0235f42f5da",
+    "jetty-servlet-api-4.0.6.jar": "d90bf1f8a9d2ba89f4510bb51e1516dcf94ef6dc034e00f233654abdd78f2210",
+    "jetty-util-10.0.26.jar": "95e2dc9c0d32f8585814272a32128b5328ca3f2b9c31fd8aae06e3476f253cb5",
+    "jfuse-0.7.3.jar": "dd2a86913383de9ddcc737f813ef712f0e5157964107a6f77ab88e540fc2f72e",
+    "jfuse-api-0.7.3.jar": "856d758fbe74a376080f7e84ad12c0dc721327da43f0b66fd85ff01d89c3772c",
+    "jfuse-linux-aarch64-0.7.3.jar": "1ad5b3a92ce5c05cd5334bcecc589bf6ab9944b79082978e8480647ec6cf32a8",
+    "jfuse-linux-amd64-0.7.3.jar": "29b1a8ba69c5e7cdb1f499850cf670ac2d2b490471913b87a721fba1fe3ae972",
+    "jfuse-mac-0.7.3.jar": "b5201a73e1dc4a98b5acc8822a929c98e0f25802a6af25bbfbb3f80815b2eafa",
+    "jfuse-win-0.7.3.jar": "964e40b6079f661239b8d67d2f10c4978710dc6d028a71a619901722212e3375",
+    "jspecify-1.0.0.jar": "1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab",
+    "listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar": "b372a037d4230aa57fbeffdef30fd6123f9c0c2db85d0aced00c91b974f33f99",
+    "logback-classic-1.6.5.jar": "2e8c73aadad525e854af1ac95793af3dc75ecedd53c010ea2389de44c08e729b",
+    "logback-core-1.6.5.jar": "03dcbf053b40166849b8eb0a30cbde40c04a448820e9a7589c4b0a2ec3a9db63",
+    "nimbus-jose-jwt-10.5.jar": "104ed6c348d35f68ab16d85550ed59239bcb7846bc2bd885ef3851a0ab2e73cf",
+    "siv-mode-1.6.1.jar": "7d2b927818d981bd5549fb522d0df7b47522b1fde9c1a7b120965ea41e4f84d2",
+    "slf4j-api-2.0.20.jar": "7e1446499b359675d8aabe6af2de86b85e72ae8a2a932c0b40d0e5ba57097439",
+    "tiny-oauth2-client-0.8.1.jar": "d21ecd5ac992a2751ca5c296e2a69aa6229bc797440408424eaeb4b244b06730",
+    "webdav-nio-adapter-3.0.3.jar": "bb3fe9c62709f16b33f859bb769464bada6d1afd9729c80876a714222cdba661",
+    "webdav-nio-adapter-servlet-1.2.15.jar": "2db3faf39a88c20d46040d9a6f00ff8674cdaa80f6bd371afccad244af795d00",
+    "zxcvbn-1.9.0.jar": "38efaebab09144eb1f4d4c9ff650e79df875a8d6c4539c105b079a606bb7db34"
+  }
+}

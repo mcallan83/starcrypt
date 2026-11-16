@@ -40,3 +40,9 @@ def fixture(root):
                          ('link-' + 's' * 180, 'nested/café 日本語 🌎.txt')]:
         os.symlink(target, root / name)
 
+
+    # Milliseconds are portable across Java filesystem providers. Apply last so
+    # creating children cannot perturb directory modification times.
+    for path in [*root.rglob('*'), root]:
+        os.utime(path, ns=(1_600_000_100_987_000_000, 1_600_000_000_123_000_000),
+                 follow_symlinks=False)

@@ -12,6 +12,7 @@ include = [
     "/tests/interop/*.py",
     "/tests/interop/*.java",
     "/tests/interop/README.md",
+    "/tests/interop/reference/**",
     "/docs/**",
     "/scripts/*.py",
     "/scripts/*.sh",

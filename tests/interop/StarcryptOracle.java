@@ -15,6 +15,9 @@ import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.channels.FileChannel;
+import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -54,9 +57,38 @@ public final class StarcryptOracle {
                 Files.copy(entry, destination);
             }
         }
+        // Children first: later imports must not change a restored directory time.
+        var entries = new ArrayList<>(sourceEntries(source));
+        java.util.Collections.reverse(entries);
+        for (var entry : entries) {
+            if (!Files.isSymbolicLink(entry)) {
+                Files.setLastModifiedTime(vault.getPath("/" + relativeName(source, entry)),
+                        Files.getLastModifiedTime(entry, LinkOption.NOFOLLOW_LINKS));
+            }
+        }
     }
 
-    private static List<Map<String, String>> verifySource(FileSystem vault, Path source) throws Exception {
+    private static void editTree(Path root) throws Exception {
+        Files.write(root.resolve("bytes-1.bin"), "overwritten".getBytes(StandardCharsets.UTF_8));
+        Files.write(root.resolve("bytes-32769.bin"), "appended".getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
+        try (var channel = FileChannel.open(root.resolve("bytes-65536.bin"), StandardOpenOption.WRITE)) {
+            channel.truncate(32769);
+            channel.position(32760);
+            channel.write(ByteBuffer.wrap("cross-chunk-overwrite".getBytes(StandardCharsets.UTF_8)));
+        }
+        try (var channel = FileChannel.open(root.resolve("bytes-65535.bin"), StandardOpenOption.WRITE)) {
+            channel.truncate(0);
+        }
+        Files.move(root.resolve("bytes-32767.bin"), root.resolve("renamed-" + "r".repeat(180)));
+        Files.move(root.resolve("nested"), root.resolve("moved-" + "m".repeat(180)));
+        Files.delete(root.resolve("bytes-0.bin"));
+        Files.delete(root.resolve("dangling-link"));
+        Files.createDirectories(root.resolve("new-directory/empty"));
+        Files.write(root.resolve("new-directory/created"), new byte[32769]);
+        Files.createSymbolicLink(root.resolve("new-link"), root.getFileSystem().getPath("new-directory/created"));
+    }
+
+    private static List<Map<String, String>> verifySource(FileSystem vault, Path source, long timeQuantum) throws Exception {
         var entries = sourceEntries(source);
         Set<String> expected = new HashSet<>();
         for (var entry : entries) {
@@ -95,17 +127,25 @@ public final class StarcryptOracle {
                     throw new AssertionError("File mismatch: " + name);
                 }
             }
+            if (!type.equals("symlink")) {
+                long expectedTime = Files.getLastModifiedTime(entry, LinkOption.NOFOLLOW_LINKS).toMillis();
+                long actualTime = Files.getLastModifiedTime(destination, LinkOption.NOFOLLOW_LINKS).toMillis();
+                if (expectedTime / timeQuantum != actualTime / timeQuantum) {
+                    throw new AssertionError("Modification time mismatch: " + name + " expected " + expectedTime + " actual " + actualTime);
+                }
+            }
             checked.add(Map.of("name", name, "type", type));
         }
         return checked;
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6 || !(args[0].equals("create") || args[0].equals("verify") || args[0].equals("reject-corrupt"))) {
+        if (args.length != 6 || !(args[0].equals("create") || args[0].equals("verify") || args[0].equals("verify-zip") || args[0].equals("reject-corrupt") || args[0].equals("edit"))) {
             throw new IllegalArgumentException("Usage: StarcryptOracle create|verify|reject-corrupt VAULT SOURCE SCHEME PASSWORD_FILE REPORT");
         }
         boolean create = args[0].equals("create");
         boolean rejectCorrupt = args[0].equals("reject-corrupt");
+        boolean edit = args[0].equals("edit");
         var vault = Path.of(args[1]).toAbsolutePath();
         var source = Path.of(args[2]).toAbsolutePath();
         var scheme = CryptorProvider.Scheme.valueOf(args[3]);
@@ -122,7 +162,12 @@ public final class StarcryptOracle {
                 access.persist(key, vault.resolve("masterkey.cryptomator"), password);
             }
             var properties = CryptoFileSystemProperties.cryptoFileSystemProperties()
-                    .withKeyLoader(ignored -> key.copy()).withCipherCombo(scheme).build();
+                    .withKeyLoader(id -> {
+                        if (!id.equals(URI.create("masterkeyfile:masterkey.cryptomator"))) {
+                            throw new IllegalArgumentException("Unexpected key identifier: " + id);
+                        }
+                        return key.copy();
+                    }).withCipherCombo(scheme).build();
             if (create) {
                 CryptoFileSystemProvider.initialize(vault, properties, URI.create("masterkeyfile:masterkey.cryptomator"));
             }
@@ -130,9 +175,23 @@ public final class StarcryptOracle {
                 if (create) {
                     importSource(fileSystem, source);
                 }
+                if (edit) {
+                    editTree(fileSystem.getPath("/"));
+                    editTree(source);
+                    // Deterministic times after mutations, on both representations.
+                    var entries = new ArrayList<>(sourceEntries(source));
+                    java.util.Collections.reverse(entries);
+                    for (var entry : entries) {
+                        if (!Files.isSymbolicLink(entry)) {
+                            var stamp = java.nio.file.attribute.FileTime.fromMillis(1600000200456L);
+                            Files.setLastModifiedTime(entry, stamp);
+                            Files.setLastModifiedTime(fileSystem.getPath("/" + relativeName(source, entry)), stamp);
+                        }
+                    }
+                }
                 if (rejectCorrupt) {
                     try {
-                        verifySource(fileSystem, source);
+                        verifySource(fileSystem, source, args[0].equals("verify-zip") ? 2000 : 1);
                         throw new AssertionError("Corruption was accepted by official libraries");
                     } catch (Exception failure) {
                         // A bad password, missing path, or unrelated I/O failure must
@@ -149,13 +208,16 @@ public final class StarcryptOracle {
                         checked = List.of(Map.of("rejection", "AuthenticationFailedException"));
                     }
                 } else {
-                    checked = verifySource(fileSystem, source);
+                    checked = verifySource(fileSystem, source, args[0].equals("verify-zip") ? 2000 : 1);
                 }
             }
         }
         var token = Files.readString(vault.resolve("vault.cryptomator")).split("\\.");
         var claims = JsonParser.parseString(new String(Base64.getUrlDecoder().decode(token[1]), StandardCharsets.UTF_8));
         String actualScheme = claims.getAsJsonObject().get("cipherCombo").getAsString();
+        if (!actualScheme.equals(scheme.name())) {
+            throw new AssertionError("Cipher scheme mismatch: expected " + scheme + " actual " + actualScheme);
+        }
         var report = Map.of("pass", true, "action", args[0], "scheme", actualScheme, "checked", checked, "corruption_rejected", rejectCorrupt,
                 "java_version", System.getProperty("java.version"));
         Files.writeString(Path.of(args[5]), new GsonBuilder().setPrettyPrinting().create().toJson(report) + "\n");

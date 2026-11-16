@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use starcrypt::{
     ArchiveFormat, Progress, create_archive_with_progress, create_vault_with_progress,
     extract_vault_with_progress,
@@ -33,12 +33,9 @@ enum Command {
     Create {
         source: PathBuf,
         vault: PathBuf,
-        /// Package the encrypted vault folder in a ZIP archive.
-        #[arg(long, conflicts_with = "seven_zip")]
-        zip: bool,
-        /// Package the encrypted vault folder in a 7z archive.
-        #[arg(long = "7z", conflicts_with = "zip")]
-        seven_zip: bool,
+        /// Override the destination format (default: infer from .zip or .7z, otherwise folder).
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
     },
     /// Decrypt a vault folder or a ZIP/7z containing a vault into a new folder.
     Extract {
@@ -47,30 +44,45 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Folder,
+    Zip,
+    #[value(name = "7z")]
+    SevenZip,
+}
+
+impl OutputFormat {
+    fn infer(destination: &std::path::Path) -> Self {
+        match destination
+            .extension()
+            .and_then(|extension| extension.to_str())
+        {
+            Some(extension) if extension.eq_ignore_ascii_case("zip") => Self::Zip,
+            Some(extension) if extension.eq_ignore_ascii_case("7z") => Self::SevenZip,
+            _ => Self::Folder,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Create {
             source,
             vault,
-            zip,
-            seven_zip,
+            format,
         } => {
             let source = source
                 .canonicalize()
                 .context("Cannot resolve source folder")?;
             ensure!(source.is_dir(), "Source must be a folder");
             let destination = vault;
-            let format = if seven_zip {
-                Some(ArchiveFormat::SevenZip)
-            } else if zip {
-                Some(ArchiveFormat::Zip)
-            } else {
-                None
+            let format = match format.unwrap_or_else(|| OutputFormat::infer(&destination)) {
+                OutputFormat::Folder => None,
+                OutputFormat::Zip => Some(ArchiveFormat::Zip),
+                OutputFormat::SevenZip => Some(ArchiveFormat::SevenZip),
             };
-            if let Some(format) = format {
-                format.validate_destination(&destination)?;
-            }
             let password = password(true)?;
             with_status(cli.quiet, |progress| {
                 if let Some(format) = format {

@@ -8,21 +8,6 @@ pub enum ArchiveFormat {
     SevenZip,
 }
 
-impl ArchiveFormat {
-    /// Require the destination filename to end with the format's lowercase extension.
-    pub fn validate_destination(self, destination: &Path) -> Result<()> {
-        let extension = match self {
-            Self::Zip => "zip",
-            Self::SevenZip => "7z",
-        };
-        ensure!(
-            destination.extension() == Some(std::ffi::OsStr::new(extension)),
-            "Archive filename must end with .{extension}"
-        );
-        Ok(())
-    }
-}
-
 pub(crate) fn create_archive(
     source: &Path,
     destination: &Path,

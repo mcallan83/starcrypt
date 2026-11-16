@@ -50,7 +50,7 @@ pub fn create_vault_with_progress(
 
 /// Package a new encrypted vault folder into a ZIP or 7z archive.
 /// Uses the same macOS volume-root exclusions as [`create_vault`].
-/// The destination filename must end with `.zip` or `.7z`, matching the format.
+/// The explicit format determines the archive type, regardless of the filename.
 /// Unpack the archive before opening it with Cryptomator or [`extract_vault`].
 pub fn create_archive(
     source: impl AsRef<Path>,
@@ -69,7 +69,6 @@ pub fn create_archive_with_progress(
     format: ArchiveFormat,
     progress: &Progress,
 ) -> Result<()> {
-    format.validate_destination(destination.as_ref())?;
     ensure!(!password.is_empty(), "Password cannot be empty");
     let source = source
         .as_ref()

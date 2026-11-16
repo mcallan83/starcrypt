@@ -71,3 +71,74 @@ fn empty_stdin_fails_without_creating_vault() {
         assert!(!vault.exists());
     }
 }
+
+#[test]
+fn create_infers_format_and_honors_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("hello.txt"), b"hello").unwrap();
+    for (index, (name, format, expected)) in [
+        ("vault", None, "folder"),
+        ("vault.zip", None, "zip"),
+        ("vault.7z", None, "7z"),
+        ("vault.ZIP", None, "zip"),
+        ("vault.7Z", None, "7z"),
+        ("folder.zip", Some("folder"), "folder"),
+        ("archive.7z", Some("zip"), "zip"),
+        ("archive.zip", Some("7z"), "7z"),
+        ("archive", Some("zip"), "zip"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = temp.path().join(format!("case-{index}"));
+        fs::create_dir(&case).unwrap();
+        let destination = case.join(name);
+        let mut args = vec![
+            "create".as_ref(),
+            source.as_os_str(),
+            destination.as_os_str(),
+        ];
+        if let Some(format) = format {
+            args.push("--format".as_ref());
+            args.push(format.as_ref());
+        }
+        let output = run(&args, b"secret\n");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if expected == "folder" {
+            assert!(destination.join("vault.cryptomator").is_file());
+        } else {
+            let bytes = fs::read(&destination).unwrap();
+            let magic: &[u8] = if expected == "zip" {
+                b"PK\x03\x04"
+            } else {
+                b"7z\xbc\xaf\x27\x1c"
+            };
+            assert!(bytes.starts_with(magic));
+        }
+        // Give overrides a matching extension for extraction.
+        let input = if format.is_some() && expected != "folder" {
+            let renamed = temp.path().join(format!("renamed-{index}.{expected}"));
+            fs::rename(&destination, &renamed).unwrap();
+            renamed
+        } else {
+            destination
+        };
+        let restored = temp.path().join(format!("restored-{index}"));
+        let output = run(
+            &["extract".as_ref(), input.as_os_str(), restored.as_os_str()],
+            b"secret\n",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(restored.join("hello.txt")).unwrap(), b"hello");
+    }
+}

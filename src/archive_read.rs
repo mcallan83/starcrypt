@@ -64,7 +64,12 @@ pub(crate) fn unpack(source: &Path, root: &Path) -> Result<PathBuf> {
         seen: HashSet::new(),
         times: Vec::new(),
     };
-    match source.extension().and_then(|extension| extension.to_str()) {
+    match source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("zip") => {
             let mut archive = zip::ZipArchive::new(fs::File::open(source)?)?;
             for index in 0..archive.len() {

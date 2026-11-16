@@ -54,55 +54,6 @@ fn destination_collisions_preserve_existing_paths() -> Result<()> {
 }
 
 #[test]
-fn archive_extension_must_match_format_before_processing_source() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    // A nonexistent source proves extension validation happens before source access.
-    let source = temp.path().join("missing-source");
-    let cli_source = temp.path().join("source");
-    fs::create_dir(&cli_source)?;
-    for (flag, filename, extension) in [("--zip", "vault.7z", "zip"), ("--7z", "vault.zip", "7z")] {
-        let result = std::process::Command::new(env!("CARGO_BIN_EXE_starcrypt"))
-            .arg("create")
-            .arg(&cli_source)
-            .arg(temp.path().join(filename))
-            .arg(flag)
-            .stdin(std::process::Stdio::null())
-            .output()?;
-        assert!(!result.status.success());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains(&format!("Archive filename must end with .{extension}"))
-        );
-        assert!(!String::from_utf8_lossy(&result.stderr).contains("Vault password:"));
-    }
-
-    for (format, extension, names) in [
-        (
-            ArchiveFormat::Zip,
-            "zip",
-            ["vault", "vault.7z", "vault.zip.txt", "vault.ZIP"],
-        ),
-        (
-            ArchiveFormat::SevenZip,
-            "7z",
-            ["vault", "vault.zip", "vault.7z.txt", "vault.7Z"],
-        ),
-    ] {
-        for name in names {
-            let destination = temp.path().join(name);
-            let error = create_archive(&source, &destination, "test password", format).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                format!("Archive filename must end with .{extension}")
-            );
-            assert!(!destination.exists());
-        }
-        format.validate_destination(&temp.path().join(format!("vault.{extension}")))?;
-    }
-    Ok(())
-}
-
-#[test]
 #[cfg(unix)]
 fn unreadable_volume_directory_reports_path_and_removes_output() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

@@ -20,7 +20,7 @@ use oxcrypt_core::{
 use std::{
     fs,
     io::Read,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
@@ -78,6 +78,39 @@ fn ordinary_metadata(path: &Path) -> Result<fs::Metadata> {
         path.display()
     );
     Ok(metadata)
+}
+
+/// Check every component below the selected vault, not just the final directory:
+/// symlink_metadata follows links in ancestors. Recheck on each traversal rather
+/// than caching these checks. This is not atomic against concurrent replacement.
+pub(super) fn storage_directory(
+    ops: &VaultOperations,
+    id: &DirId,
+) -> Result<(PathBuf, fs::Metadata)> {
+    let storage = ops.calculate_directory_storage_path(id)?;
+    let relative = storage
+        .strip_prefix(ops.vault_path())
+        .context("Encrypted directory storage is outside the vault")?;
+    let mut path = ops.vault_path().to_path_buf();
+    let mut metadata = None;
+    for component in relative.components() {
+        ensure!(
+            matches!(component, Component::Normal(_)),
+            "Invalid encrypted directory storage path"
+        );
+        path.push(component);
+        let current = ordinary_metadata(&path)?;
+        ensure!(
+            current.is_dir(),
+            "Missing encrypted directory storage: {}",
+            path.display()
+        );
+        metadata = Some(current);
+    }
+    Ok((
+        storage,
+        metadata.context("Empty encrypted directory storage path")?,
+    ))
 }
 
 pub(super) fn open_vault(vault: &Path, password: &str) -> Result<VaultOperations> {
@@ -155,11 +188,7 @@ pub(super) fn validate_file(ops: &VaultOperations, path: &Path, size: u64) -> Re
 }
 
 pub(super) fn strict_list(ops: &VaultOperations, id: &DirId) -> Result<Vec<DirEntry>> {
-    let storage = ops.calculate_directory_storage_path(id)?;
-    ensure!(
-        ordinary_metadata(&storage)?.is_dir(),
-        "Missing encrypted directory storage"
-    );
+    let (storage, _) = storage_directory(ops, id)?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&storage)? {
         let entry = entry?;

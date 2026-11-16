@@ -18,6 +18,11 @@ the Java suite does not exercise them.
 
 ## Limitations
 
+- Native filesystem symlinks in encrypted storage paths are rejected, including
+  the `d` directory and shard directories. Encrypted user symlink entries remain
+  supported. Path validation is not an atomic snapshot against concurrent
+  filesystem changes.
+
 - Vault configuration and master-key metadata files are limited to 64 KiB each.
   Scrypt requires a positive block size and a power-of-two cost greater than one.
   StarCrypt rejects settings whose estimated scrypt working buffers exceed

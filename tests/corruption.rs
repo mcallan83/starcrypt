@@ -6,6 +6,55 @@ use starcrypt::{create_vault, extract_vault};
 use std::fs;
 
 #[test]
+#[cfg(unix)]
+fn native_symlink_storage_ancestors_are_rejected() -> Result<()> {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("child"))?;
+    fs::write(source.join("payload"), b"root file")?;
+    fs::write(source.join("child/data"), b"nested file")?;
+    symlink("child/data", source.join("user-link"))?;
+    let base = temp.path().join("base");
+    create_vault(&source, &base, "test password")?;
+    let ops = VaultOperations::open(&base, "test password")?;
+    let root_storage = ops.calculate_directory_storage_path(&DirId::root())?;
+    let child = ops.find_directory(&DirId::root(), "child")?.unwrap();
+    let child_storage = ops.calculate_directory_storage_path(&child.directory_id)?;
+    for (name, path) in [
+        ("data-root", base.join("d")),
+        ("root-shard", root_storage.parent().unwrap().to_owned()),
+        ("root-storage", root_storage),
+        ("child-shard", child_storage.parent().unwrap().to_owned()),
+        ("child-storage", child_storage),
+    ] {
+        let relative = path.strip_prefix(&base)?;
+        let vault = temp.path().join(format!("vault-{name}"));
+        copy_tree(&base, &vault)?;
+        let link = vault.join(relative);
+        let outside = temp.path().join(format!("outside-{name}"));
+        fs::rename(&link, &outside)?;
+        symlink(&outside, &link)?;
+        let output = temp.path().join(format!("output-{name}"));
+        let error = extract_vault(&vault, &output, "test password").unwrap_err();
+        let message = format!("{error:#}");
+        ensure!(
+            message.contains("Unexpected native symlink in encrypted vault"),
+            "{message}"
+        );
+        ensure!(message.contains(&link.display().to_string()), "{message}");
+        ensure!(!output.exists());
+        ensure!(fs::read_link(&link)? == outside);
+        compare_tree(&base.join(relative), &outside)?;
+    }
+    // Encrypted symlink entries are user data, not native storage shortcuts.
+    let output = temp.path().join("valid-output");
+    extract_vault(&base, &output, "test password")?;
+    compare_tree(&source, &output)?;
+    Ok(())
+}
+
+#[test]
 fn corruption_in_a_later_parallel_batch_cleans_all_output() -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let temp = tempfile::tempdir()?;

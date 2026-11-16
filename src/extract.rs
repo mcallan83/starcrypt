@@ -4,7 +4,7 @@ use crate::fsutil::copy_symlink_times;
 use crate::{
     decrypt::{self, Source},
     fsutil::{copy_times, safe_name},
-    vault_read::{strict_list, validate_file},
+    vault_read::{storage_directory, strict_list, validate_file},
 };
 use anyhow::{Context, Result, ensure};
 use oxcrypt_core::{
@@ -56,7 +56,7 @@ fn export_with_writer(
             .get(id.as_str())
             .context("Vault changed after scanning")?
             .clone(),
-        None => fs::metadata(ops.calculate_directory_storage_path(id)?)?,
+        None => storage_directory(ops, id)?.1,
     };
     ensure!(
         visited.insert(id.as_str().to_owned()),
@@ -123,10 +123,7 @@ fn scan_vault(
         !directories.contains_key(id.as_str()),
         "Vault contains a repeated directory ID"
     );
-    directories.insert(
-        id.as_str().to_owned(),
-        fs::metadata(ops.calculate_directory_storage_path(id)?)?,
-    );
+    directories.insert(id.as_str().to_owned(), storage_directory(ops, id)?.1);
     let mut bytes = 0u64;
     let mut files = 0u64;
     for entry in strict_list(ops, id)? {

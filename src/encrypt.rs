@@ -218,11 +218,6 @@ pub(crate) fn with_pool(
     with_workers_progress(workers, progress, work)
 }
 
-#[cfg(test)]
-fn with_workers(workers: usize, work: impl FnOnce(&EncryptionPool) -> Result<()>) -> Result<()> {
-    with_workers_progress(workers, &crate::Progress::default(), work)
-}
-
 fn with_workers_progress(
     workers: usize,
     progress: &crate::Progress,
@@ -276,6 +271,13 @@ fn with_workers_progress(
 mod tests {
     use super::*;
     use oxcrypt_core::{crypto::keys::MasterKey, vault::path::DirId};
+
+    fn with_workers(
+        workers: usize,
+        work: impl FnOnce(&EncryptionPool) -> Result<()>,
+    ) -> Result<()> {
+        with_workers_progress(workers, &crate::Progress::default(), work)
+    }
 
     #[test]
     fn changed_source_size_is_rejected_before_creating_ciphertext() -> Result<()> {

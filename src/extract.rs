@@ -160,7 +160,7 @@ fn scan_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{create::create, fsutil::new_output, vault_read::open_vault};
+    use crate::{create_vault, fsutil::new_output, vault_read::open_vault};
     use std::io::Write;
     use zeroize::Zeroizing;
     #[test]
@@ -190,7 +190,7 @@ mod tests {
         let data = vec![42; 65_537];
         fs::write(source.join("payload"), &data)?;
         let vault = temp.path().join("vault");
-        create(&source, &vault, "test password")?;
+        create_vault(&source, &vault, "test password")?;
         let ops = open_vault(&vault, "test password")?;
         let output = temp.path().join("output");
         let error = new_output(&output, || {

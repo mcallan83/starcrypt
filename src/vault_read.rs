@@ -303,14 +303,20 @@ pub(super) fn strict_list(ops: &VaultOperations, id: &DirId) -> Result<Vec<DirEn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxcrypt_core::{crypto::keys::MasterKey, vault::master_key::create_masterkey_file};
 
     #[test]
     fn scrypt_resource_boundaries_are_checked_without_deriving_keys() -> Result<()> {
-        let mut key: MasterKeyFile = serde_json::from_str(&create_masterkey_file(
-            &MasterKey::random()?,
-            "test password",
-        )?)?;
+        // Structurally valid metadata is sufficient here; this fixture does not
+        // contain real wrapped keys and is never passed to password derivation.
+        let mut key: MasterKeyFile = serde_json::from_value(serde_json::json!({
+            "version": 999,
+            "scryptSalt": "AQ==",
+            "scryptCostParam": 32768,
+            "scryptBlockSize": 8,
+            "primaryMasterKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            "hmacMasterKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            "versionMac": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        }))?;
         for (n, r) in [(2, 1), (32768, 8), (131072, 8), (2, 524288)] {
             key.scrypt_cost_param = n;
             key.scrypt_block_size = r;

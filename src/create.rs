@@ -18,11 +18,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(test)]
-pub(crate) fn create(source: &Path, destination: &Path, password: &str) -> Result<()> {
-    create_with_progress(source, destination, password, &crate::Progress::default())
-}
-
 pub(crate) fn create_with_progress(
     source: &Path,
     destination: &Path,
@@ -35,22 +30,6 @@ pub(crate) fn create_with_progress(
     );
     let volume_root = crate::fsutil::is_macos_volume_root(source)?;
     create_impl(source, destination, password, volume_root, progress)
-}
-
-#[cfg(test)]
-fn create_with_volume_policy(
-    source: &Path,
-    destination: &Path,
-    password: &str,
-    volume_root: bool,
-) -> Result<()> {
-    create_impl(
-        source,
-        destination,
-        password,
-        volume_root,
-        &crate::Progress::default(),
-    )
 }
 
 fn create_impl(
@@ -311,6 +290,21 @@ fn is_volume_bookkeeping(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create_with_volume_policy(
+        source: &Path,
+        destination: &Path,
+        password: &str,
+        volume_root: bool,
+    ) -> Result<()> {
+        create_impl(
+            source,
+            destination,
+            password,
+            volume_root,
+            &crate::Progress::default(),
+        )
+    }
 
     #[test]
     #[ignore = "manual release-mode throughput measurement; no password KDF"]

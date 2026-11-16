@@ -23,22 +23,6 @@ pub(crate) fn create_archive(
     })
 }
 
-#[cfg(test)]
-fn create_archive_using(
-    source: &Path,
-    destination: &Path,
-    password: &str,
-    write: impl FnOnce(&Path, fs::File) -> Result<()>,
-) -> Result<()> {
-    create_archive_using_progress(
-        source,
-        destination,
-        password,
-        &crate::Progress::default(),
-        write,
-    )
-}
-
 fn create_archive_using_progress(
     source: &Path,
     destination: &Path,
@@ -159,6 +143,21 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::PathBuf;
+
+    fn create_archive_using(
+        source: &Path,
+        destination: &Path,
+        password: &str,
+        write: impl FnOnce(&Path, fs::File) -> Result<()>,
+    ) -> Result<()> {
+        create_archive_using_progress(
+            source,
+            destination,
+            password,
+            &crate::Progress::default(),
+            write,
+        )
+    }
 
     #[test]
     fn invalid_internal_name_fails_before_source_access_or_packaging() -> Result<()> {

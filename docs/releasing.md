@@ -18,6 +18,9 @@ The default test command includes ZIP and 7z archive tests. It needs neither Jav
 nor Cryptomator. Formatting, Clippy, and release compilation are separate checks;
 `cargo test` does not run them.
 
+See [testing](testing.md) for the unit/integration test layout and commands for
+running individual targets.
+
 For independent archive-reader compatibility, install `unzip` and `7zz`, then run:
 
 ```sh

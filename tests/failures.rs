@@ -3,6 +3,80 @@ use starcrypt::{ArchiveFormat, create_archive, create_vault};
 use std::fs;
 
 #[test]
+fn public_operations_reject_empty_passwords_before_creating_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let missing = temp.path().join("missing");
+    let output = temp.path().join("output");
+    let errors = [
+        create_vault(&missing, &output, "").unwrap_err(),
+        create_archive(&missing, &output, "", ArchiveFormat::Zip).unwrap_err(),
+        starcrypt::extract_vault(&missing, &output, "").unwrap_err(),
+    ];
+    for error in errors {
+        ensure!(error.to_string() == "Password cannot be empty");
+    }
+    ensure!(!output.exists());
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn special_source_files_are_rejected_without_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    let socket = source.join("socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    for (name, result) in [
+        (
+            "vault",
+            create_vault(&source, temp.path().join("vault"), "test password"),
+        ),
+        (
+            "vault.zip",
+            create_archive(
+                &source,
+                temp.path().join("vault.zip"),
+                "test password",
+                ArchiveFormat::Zip,
+            ),
+        ),
+        (
+            "vault.7z",
+            create_archive(
+                &source,
+                temp.path().join("vault.7z"),
+                "test password",
+                ArchiveFormat::SevenZip,
+            ),
+        ),
+    ] {
+        let error = result.unwrap_err();
+        ensure!(error.to_string().contains("Unsupported special file"));
+        ensure!(error.to_string().contains(&socket.display().to_string()));
+        ensure!(!temp.path().join(name).exists());
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn non_utf8_symlink_targets_fail_without_following_the_link() -> Result<()> {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    let target = std::ffi::OsStr::from_bytes(b"invalid-\xff");
+    symlink(target, source.join("link"))?;
+    let output = temp.path().join("vault");
+    let error = create_vault(&source, &output, "test password").unwrap_err();
+    ensure!(format!("{error:#}").contains("Non-UTF-8 symlink target"));
+    ensure!(!output.exists());
+    ensure!(fs::read_link(source.join("link"))?.as_os_str() == target);
+    Ok(())
+}
+
+#[test]
 fn oversized_vault_metadata_is_rejected_before_unlocking() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");

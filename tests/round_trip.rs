@@ -9,6 +9,82 @@ use starcrypt::{create_vault, extract_vault};
 use std::{fs, path::Path};
 
 #[test]
+fn legacy_ctrmac_configuration_and_empty_files_are_supported() -> Result<()> {
+    use oxcrypt_core::vault::config::CipherCombo;
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("child"))?;
+    fs::write(source.join("empty"), [])?;
+    fs::write(source.join("child/data"), vec![42; 1024 * 1024 + 19])?;
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    let ops = VaultOperations::open(&vault, "test password")?;
+    for name in ["empty", "child/data"] {
+        let (parent, filename) = ops.resolve_parent_path(name)?;
+        let path = ops.find_file(&parent, &filename)?.unwrap().encrypted_path;
+        fs::write(
+            path,
+            CipherCombo::SivCtrMac.encrypt_file(&fs::read(source.join(name))?, ops.master_key())?,
+        )?;
+    }
+    let token = fs::read_to_string(vault.join("vault.cryptomator"))?;
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.required_spec_claims.clear();
+    let mut claims: serde_json::Value = ops.master_key().validate_jwt(&token, &validation)?;
+    claims["cipherCombo"] = "SIV_CTRMAC".into();
+    fs::write(
+        vault.join("vault.cryptomator"),
+        jsonwebtoken::encode(
+            &jsonwebtoken::decode_header(&token)?,
+            &claims,
+            &ops.master_key().create_jwt_encoding_key()?,
+        )?,
+    )?;
+    let output = temp.path().join("output");
+    extract_vault(&vault, &output, "test password")?;
+    compare_tree(&source, &output)?;
+    let path = ops
+        .find_file(&DirId::root(), "empty")?
+        .unwrap()
+        .encrypted_path;
+    let mut bytes = fs::read(&path)?;
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(path, bytes)?;
+    let output = temp.path().join("invalid");
+    ensure!(extract_vault(&vault, &output, "test password").is_err());
+    ensure!(!output.exists());
+    Ok(())
+}
+
+#[test]
+fn legacy_shortened_names_and_unrelated_sidecars_are_supported() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    let name = "l".repeat(180);
+    fs::write(source.join(&name), b"legacy short name")?;
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    let ops = VaultOperations::open(&vault, "test password")?;
+    let storage = ops.calculate_directory_storage_path(&DirId::root())?;
+    let path = fs::read_dir(&storage)?.next().unwrap()?.path();
+    let original = fs::read_to_string(path.join("name.c9s"))?;
+    let legacy = original.strip_suffix(".c9r").unwrap();
+    let destination = storage.join(format!("{}.c9s", create_c9s_filename(legacy)));
+    fs::rename(&path, &destination)?;
+    fs::write(destination.join("name.c9s"), legacy)?;
+    fs::write(storage.join(".DS_Store"), b"unrelated Finder metadata")?;
+    fs::write(
+        storage.join("dirid.c9r"),
+        b"optional recovery data is not a user file",
+    )?;
+    let output = temp.path().join("output");
+    extract_vault(&vault, &output, "test password")?;
+    compare_tree(&source, &output)?;
+    Ok(())
+}
+
+#[test]
 fn round_trip_and_wrong_password() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");
@@ -37,6 +113,10 @@ fn round_trip_and_wrong_password() -> Result<()> {
     let vault = temp.path().join("vault");
     create_vault(&source, &vault, "test password")?;
     assert!(vault.join("masterkey.cryptomator").is_file());
+    let key: serde_json::Value =
+        serde_json::from_slice(&fs::read(vault.join("masterkey.cryptomator"))?)?;
+    assert_eq!(key["scryptCostParam"], 32768);
+    assert_eq!(key["scryptBlockSize"], 8);
     assert_eq!(
         jsonwebtoken::decode_header(&fs::read_to_string(vault.join("vault.cryptomator"))?)?
             .kid

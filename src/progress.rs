@@ -70,3 +70,41 @@ impl Progress {
         state.snapshot.files += files;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clones_share_updates_without_losing_counts_or_messages() {
+        let progress = Progress::with_buffered_messages();
+        progress.phase("Encrypting");
+        progress.totals(10_000, 1_000);
+        let before = progress.snapshot();
+        std::thread::scope(|scope| {
+            for worker in 1..=8 {
+                let progress = progress.clone();
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        progress.advance(worker, 1);
+                    }
+                    progress.message(format!("worker-{worker}"));
+                });
+            }
+        });
+        let after = progress.snapshot();
+        assert_eq!(after.bytes, 3600);
+        assert_eq!(after.files, 800);
+        assert_eq!(after.phase, "Encrypting");
+        assert_eq!(after.total_bytes, Some(10_000));
+        assert_eq!(after.total_files, Some(1_000));
+        assert_eq!(before.bytes, 0);
+        let mut messages = progress.drain_messages();
+        messages.sort();
+        assert_eq!(
+            messages,
+            (1..=8).map(|n| format!("worker-{n}")).collect::<Vec<_>>()
+        );
+        assert!(progress.drain_messages().is_empty());
+    }
+}

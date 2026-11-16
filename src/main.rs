@@ -189,3 +189,56 @@ fn with_status(quiet: bool, work: impl FnOnce(&Progress) -> Result<()>) -> Resul
         result
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn password_input_preserves_data_and_only_strips_line_endings() -> Result<()> {
+        for (input, expected) in [
+            ("secret", "secret"),
+            (" secret \n", " secret "),
+            ("secret\r\nignored\n", "secret"),
+            ("secret\r", "secret\r"),
+            ("café 🌎\n", "café 🌎"),
+            (" \n", " "),
+        ] {
+            assert_eq!(&*password_from_reader(Cursor::new(input))?, expected);
+        }
+        for input in ["", "\n", "\r\n"] {
+            assert!(password_from_reader(Cursor::new(input)).is_err());
+        }
+        let error = password_from_reader(Cursor::new(b"\xff\n")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot read password from stdin")
+        );
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn destination_inference_uses_only_the_final_extension() {
+        for (path, expected) in [
+            ("vault", OutputFormat::Folder),
+            ("vault.txt", OutputFormat::Folder),
+            ("vault.Zip", OutputFormat::Zip),
+            ("vault.7Z", OutputFormat::SevenZip),
+            ("vault.zip.txt", OutputFormat::Folder),
+            ("directory.zip/vault", OutputFormat::Folder),
+            (".zip", OutputFormat::Folder),
+        ] {
+            assert_eq!(
+                OutputFormat::infer(std::path::Path::new(path)),
+                expected,
+                "{path}"
+            );
+        }
+    }
+}

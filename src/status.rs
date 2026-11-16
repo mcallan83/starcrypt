@@ -177,4 +177,55 @@ mod tests {
         );
         assert_eq!(escape_message("bad\x1b[31m\n"), "bad\\u{1b}[31m\\n");
     }
+
+    #[test]
+    fn counters_and_elapsed_times_are_readable_at_boundaries() {
+        for (value, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1,000"),
+            (1_234_567, "1,234,567"),
+        ] {
+            assert_eq!(number(value), expected);
+        }
+        for (seconds, expected) in [
+            (0, "0s"),
+            (59, "59s"),
+            (60, "1m 00s"),
+            (3599, "59m 59s"),
+            (3600, "1h 00m 00s"),
+            (3661, "1h 01m 01s"),
+        ] {
+            assert_eq!(duration(Duration::from_secs(seconds)), expected);
+        }
+    }
+
+    #[test]
+    fn display_scales_bytes_and_empty_files_and_finishes_cleanly() {
+        let mut display = Display::new();
+        display.bar.set_draw_target(ProgressDrawTarget::hidden());
+        let mut snapshot = ProgressSnapshot {
+            phase: "Encrypting",
+            bytes: 150,
+            files: 3,
+            total_bytes: Some(100),
+            total_files: Some(5),
+        };
+        display.render(&snapshot, "working".into(), vec![], None);
+        assert!(display.bounded);
+        assert_eq!(display.bar.length(), Some(100));
+        assert_eq!(display.bar.position(), 100);
+        snapshot.total_bytes = Some(0);
+        display.render(&snapshot, "working".into(), vec![], None);
+        assert_eq!(display.bar.length(), Some(5));
+        assert_eq!(display.bar.position(), 3);
+        snapshot.phase = "Packaging archive";
+        display.render(&snapshot, "packaging".into(), vec![], None);
+        assert!(!display.bounded);
+        snapshot.total_bytes = None;
+        snapshot.total_files = None;
+        assert!(line(&snapshot, None, Duration::ZERO).starts_with("Packaging archive"));
+        display.render(&snapshot, "Completed".into(), vec![], Some(true));
+        assert!(display.bar.is_finished());
+    }
 }

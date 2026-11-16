@@ -305,6 +305,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_reader_enforces_the_exact_size_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("metadata");
+        let bytes = vec![42; MAX_METADATA_BYTES as usize];
+        fs::write(&path, &bytes)?;
+        assert_eq!(read_metadata(&path)?, bytes);
+        fs::write(&path, vec![42; MAX_METADATA_BYTES as usize + 1])?;
+        assert!(
+            read_metadata(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("64 KiB limit")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_size_validation_rejects_partial_headers_and_tags() -> Result<()> {
+        for (cipher, header, overhead) in [
+            (CipherCombo::SivGcm, 68, 28),
+            (CipherCombo::SivCtrMac, 88, 48),
+        ] {
+            for size in [
+                header,
+                header + overhead + 1,
+                header + 32768 + overhead,
+                header + 2 * (32768 + overhead),
+            ] {
+                validate_file_size(size, cipher)?;
+            }
+            for size in [
+                0,
+                header - 1,
+                header + 1,
+                header + overhead,
+                header + 32768 + overhead + 1,
+                header + 32768 + 2 * overhead,
+            ] {
+                assert!(
+                    validate_file_size(size, cipher).is_err(),
+                    "{cipher:?}: {size}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn scrypt_resource_boundaries_are_checked_without_deriving_keys() -> Result<()> {
         // Structurally valid metadata is sufficient here; this fixture does not
         // contain real wrapped keys and is never passed to password derivation.

@@ -19,6 +19,94 @@ fn run(args: &[&std::ffi::OsStr], password: &[u8]) -> std::process::Output {
 }
 
 #[test]
+fn help_version_and_argument_errors_do_not_request_passwords() {
+    for args in [
+        vec!["--help"],
+        vec!["create", "--help"],
+        vec!["extract", "--help"],
+        vec!["--version"],
+    ] {
+        let args = args.iter().map(|value| value.as_ref()).collect::<Vec<_>>();
+        let output = run(&args, b"");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("Vault password:"));
+    }
+    for args in [
+        vec![],
+        vec!["create"],
+        vec!["extract"],
+        vec!["unknown"],
+        vec!["create", "source", "vault", "--format", "tar"],
+    ] {
+        let args = args.iter().map(|value| value.as_ref()).collect::<Vec<_>>();
+        let output = run(&args, b"");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!output.stderr.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("Vault password:"));
+    }
+}
+
+#[test]
+fn quiet_suppresses_progress_but_preserves_results_and_errors() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    fs::write(source.join("hello"), b"quiet round trip")?;
+    let vault = temp.path().join("vault");
+    let output = run(
+        &[
+            "--quiet".as_ref(),
+            "create".as_ref(),
+            source.as_os_str(),
+            vault.as_os_str(),
+        ],
+        b"secret\n",
+    );
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(output.stderr.is_empty());
+    ensure!(String::from_utf8_lossy(&output.stdout).contains("Created vault:"));
+    let restored = temp.path().join("restored");
+    let output = run(
+        &[
+            "extract".as_ref(),
+            vault.as_os_str(),
+            restored.as_os_str(),
+            "--quiet".as_ref(),
+        ],
+        b"secret\n",
+    );
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(output.stderr.is_empty());
+    ensure!(fs::read(restored.join("hello"))? == b"quiet round trip");
+    let missing = temp.path().join("missing");
+    let output = run(
+        &[
+            "create".as_ref(),
+            missing.as_os_str(),
+            temp.path().join("unused").as_os_str(),
+            "--quiet".as_ref(),
+        ],
+        b"secret\n",
+    );
+    ensure!(output.status.code() == Some(1));
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("Cannot resolve source folder"));
+    Ok(())
+}
+
+#[test]
 fn piped_create_and_file_extract() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
@@ -197,6 +285,11 @@ fn malformed_master_key_metadata_exits_normally_without_output() -> Result<()> {
         ),
         (
             "primaryMasterKey",
+            json!(""),
+            "Invalid wrapped master-key length",
+        ),
+        (
+            "hmacMasterKey",
             json!(""),
             "Invalid wrapped master-key length",
         ),

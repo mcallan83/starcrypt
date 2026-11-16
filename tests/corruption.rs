@@ -93,6 +93,7 @@ fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");
     fs::create_dir_all(source.join("child"))?;
+    fs::create_dir(source.join("second-child"))?;
     fs::write(
         source.join("payload"),
         (0..65_536).map(|i| (i % 251) as u8).collect::<Vec<_>>(),
@@ -119,6 +120,12 @@ fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
         .to_owned();
     let directory = ops.find_directory(&DirId::root(), "child")?.unwrap();
     let child_entry = directory.encrypted_path.strip_prefix(&base)?.to_owned();
+    let second_entry = ops
+        .find_directory(&DirId::root(), "second-child")?
+        .unwrap()
+        .encrypted_path
+        .strip_prefix(&base)?
+        .to_owned();
     let child_storage = ops
         .calculate_directory_storage_path(&directory.directory_id)?
         .strip_prefix(&base)?
@@ -151,6 +158,23 @@ fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
         "ambiguous-entry",
         "native-symlink-payload",
         "escaping-masterkey",
+        "empty-directory-id",
+        "repeated-directory-id",
+        "shortened-container-is-file",
+        "shortened-name-is-directory",
+        "file-container-without-shortening",
+        "unsafe-decrypted-name",
+        "symlink-target-nul",
+        "symlink-target-non-utf8",
+        "native-symlink-marker",
+        "key-is-directory",
+        "configuration-is-directory",
+        "missing-key-location",
+        "unsupported-key-location",
+        "absolute-key-location",
+        "empty-key-location",
+        "unsupported-format",
+        "unsupported-cipher",
     ];
     for name in cases {
         let vault = temp.path().join(name);
@@ -218,14 +242,92 @@ fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
                 fs::remove_file(&payload)?;
                 std::os::unix::fs::symlink(source.join("payload"), &payload)?;
             }
-            "escaping-masterkey" => {
+            "empty-directory-id" => fs::write(vault.join(&child_entry).join("dir.c9r"), b"")?,
+            "repeated-directory-id" => fs::write(
+                vault.join(&second_entry).join("dir.c9r"),
+                directory.directory_id.as_str(),
+            )?,
+            "shortened-container-is-file" => {
+                let path = vault.join(&shortened);
+                fs::remove_dir_all(&path)?;
+                fs::write(path, b"invalid container")?;
+            }
+            "shortened-name-is-directory" => {
+                let path = vault.join(&shortened).join("name.c9s");
+                fs::remove_file(&path)?;
+                fs::create_dir(path)?;
+            }
+            "file-container-without-shortening" => {
+                let bytes = fs::read(&payload)?;
+                fs::remove_file(&payload)?;
+                fs::create_dir(&payload)?;
+                fs::write(payload.join("contents.c9r"), bytes)?;
+            }
+            "unsafe-decrypted-name" => {
+                let name =
+                    oxcrypt_core::fs::name::encrypt_filename("../outside", "", ops.master_key())?;
+                fs::rename(
+                    &payload,
+                    payload.parent().unwrap().join(format!("{name}.c9r")),
+                )?;
+            }
+            "symlink-target-nul" | "symlink-target-non-utf8" => {
+                let target: &[u8] = if name == "symlink-target-nul" {
+                    b"a\0b"
+                } else {
+                    b"\xff"
+                };
+                fs::write(
+                    vault.join(&link).join("symlink.c9r"),
+                    ops.cipher_combo().encrypt_file(target, ops.master_key())?,
+                )?;
+            }
+            "native-symlink-marker" => {
+                let marker = vault.join(&child_entry).join("dir.c9r");
+                let outside = temp.path().join("outside-marker");
+                fs::rename(&marker, &outside)?;
+                std::os::unix::fs::symlink(outside, marker)?;
+            }
+            "key-is-directory" | "configuration-is-directory" => {
+                let path = vault.join(if name == "key-is-directory" {
+                    "masterkey.cryptomator"
+                } else {
+                    "vault.cryptomator"
+                });
+                fs::remove_file(&path)?;
+                fs::create_dir(path)?;
+            }
+            "escaping-masterkey"
+            | "missing-key-location"
+            | "unsupported-key-location"
+            | "absolute-key-location"
+            | "empty-key-location"
+            | "unsupported-format"
+            | "unsupported-cipher" => {
                 let token = fs::read_to_string(vault.join("vault.cryptomator"))?;
                 let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
                 validation.required_spec_claims.clear();
-                let claims: serde_json::Value =
+                let mut claims: serde_json::Value =
                     ops.master_key().validate_jwt(&token, &validation)?;
                 let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-                header.kid = Some("masterkeyfile:../base/masterkey.cryptomator".into());
+                header.kid = match name {
+                    "escaping-masterkey" => {
+                        Some("masterkeyfile:../base/masterkey.cryptomator".into())
+                    }
+                    "missing-key-location" => None,
+                    "unsupported-key-location" => Some("hub+https://example.invalid/key".into()),
+                    "absolute-key-location" => {
+                        Some("masterkeyfile:/outside/masterkey.cryptomator".into())
+                    }
+                    "empty-key-location" => Some("masterkeyfile:".into()),
+                    _ => Some("masterkeyfile:masterkey.cryptomator".into()),
+                };
+                if name == "unsupported-format" {
+                    claims["format"] = 9.into();
+                }
+                if name == "unsupported-cipher" {
+                    claims["cipherCombo"] = "UNKNOWN".into();
+                }
                 fs::write(
                     vault.join("vault.cryptomator"),
                     jsonwebtoken::encode(
@@ -238,8 +340,22 @@ fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
             _ => unreachable!(),
         }
         let output = temp.path().join(format!("output-{name}"));
-        let result = extract_vault(&vault, &output, "test password");
-        ensure!(result.is_err(), "Corruption was silently accepted: {name}");
+        let error = extract_vault(&vault, &output, "test password")
+            .expect_err(&format!("Corruption was silently accepted: {name}"));
+        let expected = match name {
+            "repeated-directory-id" => Some("repeated directory ID"),
+            "empty-directory-id" => Some("Empty child directory ID"),
+            "unsafe-decrypted-name" => Some("Unsafe vault entry name"),
+            "native-symlink-marker" => Some("not a regular file"),
+            "shortened-container-is-file" => Some("Shortened entry is not a directory"),
+            "shortened-name-is-directory" => Some("Missing shortened filename"),
+            "file-container-without-shortening" => Some("File container lacks shortened name"),
+            "symlink-target-nul" => Some("Invalid symlink target"),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            ensure!(format!("{error:#}").contains(expected), "{name}: {error:#}");
+        }
         ensure!(!output.exists(), "Incomplete output remains: {name}");
     }
     ensure!(

@@ -120,9 +120,129 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_unsafe_names() {
-        for name in ["", ".", "..", "../escape", "/absolute", "a\\b"] {
+        for name in ["", ".", "..", "../escape", "/absolute", "a\\b", "a\0b"] {
             assert!(safe_name(name).is_err());
         }
+    }
+
+    #[test]
+    fn ordinary_and_archive_names_have_distinct_portability_rules() -> Result<()> {
+        for name in ["file", ".hidden", "日本語 🌎", " leading and trailing "] {
+            safe_name(name)?;
+            safe_archive_component(name)?;
+        }
+        safe_name("backup:2026")?;
+        assert!(safe_archive_component("backup:2026").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn destination_validation_rejects_unsafe_or_existing_paths() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        fs::create_dir(&source)?;
+        let source = source.canonicalize()?;
+        let existing = temp.path().join("existing");
+        fs::write(&existing, b"keep me")?;
+        for path in [
+            PathBuf::from("/"),
+            source.join("output"),
+            temp.path().join("../output"),
+            temp.path().join("missing/output"),
+            existing.clone(),
+        ] {
+            assert!(
+                destination_path(&path, &source).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+        assert_eq!(fs::read(&existing)?, b"keep me");
+        let name = temp.path().file_name().unwrap();
+        assert_eq!(
+            destination_path(Path::new(name), &source)?,
+            std::env::current_dir()?.canonicalize()?.join(name)
+        );
+        #[cfg(unix)]
+        {
+            let parent = temp.path().join("parent-link");
+            std::os::unix::fs::symlink(&source, &parent)?;
+            assert!(destination_path(&parent.join("output"), &source).is_err());
+            let dangling = temp.path().join("dangling");
+            std::os::unix::fs::symlink(temp.path().join("missing"), &dangling)?;
+            assert!(destination_path(&dangling, &source).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn output_creation_is_exclusive_and_cleans_up_on_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("output");
+        let error = new_output(&path, || {
+            fs::write(path.join("partial"), b"partial")?;
+            Err(std::io::Error::other("injected failure").into())
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().to_string(),
+            "injected failure"
+        );
+        assert!(!path.exists());
+        new_output(&path, || {
+            fs::write(path.join("sentinel"), b"keep me")?;
+            Ok(())
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o700);
+        }
+        let mut called = false;
+        assert!(
+            new_output(&path, || {
+                called = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!called);
+        assert_eq!(fs::read(path.join("sentinel"))?, b"keep me");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_cleanup_reports_original_error_and_remaining_output() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("output");
+        let error = new_output(&path, || {
+            // Replacing the reserved directory forces directory cleanup to fail.
+            fs::remove_dir(&path)?;
+            fs::write(&path, b"remaining output")?;
+            anyhow::bail!("original failure")
+        })
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("original failure"));
+        assert!(message.contains("Incomplete output remains"));
+        assert!(message.contains(&path.display().to_string()));
+        assert_eq!(fs::read(&path)?, b"remaining output");
+        Ok(())
+    }
+
+    #[test]
+    fn timestamp_failures_include_the_destination() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let metadata = fs::metadata(temp.path())?;
+        let missing = temp.path().join("missing");
+        assert!(copy_times(&missing, &metadata).is_err());
+        #[cfg(unix)]
+        {
+            let error = copy_symlink_times(&missing, &metadata).unwrap_err();
+            assert!(error.to_string().contains(&missing.display().to_string()));
+            assert!(error.downcast_ref::<std::io::Error>().is_some());
+        }
+        Ok(())
     }
 }
 

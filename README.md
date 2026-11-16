@@ -58,6 +58,8 @@ The destination extension determines the format: `.zip` creates a ZIP archive, `
 
 ZIP and 7z output package an encrypted Cryptomator vault into a single archive file. The archive is not separately encrypted or password-protected; encryption is provided by the vault itself. These formats change only how the vault is packaged, making it easier to store or transfer as one file rather than a folder of many files.
 
+The archive filename stem becomes the folder name inside the archive. It must be UTF-8 and cannot contain `:` or `\`; incompatible names are rejected before encryption starts.
+
 ### Extract a Vault
 
 Extraction detects the archive extension, so vault paths ending in `.zip` or `.7z` are automatically extracted from the archive before the vault is decrypted.

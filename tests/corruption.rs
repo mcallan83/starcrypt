@@ -6,6 +6,39 @@ use starcrypt::{create_vault, extract_vault};
 use std::fs;
 
 #[test]
+fn corruption_in_a_later_parallel_batch_cleans_all_output() -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("nested"))?;
+    let bytes = vec![42; 8 * 1024 * 1024 + 19];
+    fs::write(source.join("nested/large"), &bytes)?;
+    for index in 0..32 {
+        fs::write(source.join(format!("small-{index}")), b"other file")?;
+    }
+    let vault = temp.path().join("vault");
+    create_vault(&source, &vault, "test password")?;
+    let ops = VaultOperations::open(&vault, "test password")?;
+    let (parent, name) = ops.resolve_parent_path("nested/large")?;
+    let path = ops.find_file(&parent, &name)?.unwrap().encrypted_path;
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    // First payload byte of the third 1 MiB batch, beyond the initial reader.
+    let offset = 68 + 64 * (32_768 + 28) + 12;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut byte = [0];
+    file.read_exact(&mut byte)?;
+    byte[0] ^= 1;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(&byte)?;
+    let output = temp.path().join("output");
+    let error = extract_vault(&vault, &output, "test password").unwrap_err();
+    ensure!(format!("{error:#}").contains("Cannot decrypt encrypted file"));
+    ensure!(!output.exists());
+    ensure!(fs::read(source.join("nested/large"))? == bytes);
+    Ok(())
+}
+
+#[test]
 #[cfg(unix)]
 fn corruption_is_rejected_without_incomplete_output() -> Result<()> {
     let temp = tempfile::tempdir()?;

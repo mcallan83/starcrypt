@@ -24,8 +24,7 @@ impl Unpacker<'_> {
         ensure!(!name.is_empty(), "Empty archive entry path");
         let mut relative = PathBuf::new();
         for component in name.split('/') {
-            crate::fsutil::safe_name(component)?;
-            ensure!(!component.contains(':'), "Unsafe archive entry path");
+            crate::fsutil::safe_archive_component(component)?;
             relative.push(component);
         }
         ensure!(
@@ -259,6 +258,11 @@ mod tests {
                     "backslash",
                     vec![("..\\escaped", b"escape".as_slice())],
                     "Unsafe",
+                ),
+                (
+                    "colon",
+                    vec![("backup:2026/vault.cryptomator", b"fake".as_slice())],
+                    "Unsafe archive entry path",
                 ),
             ] {
                 let archive = temp.path().join(format!("{case}.{extension}"));

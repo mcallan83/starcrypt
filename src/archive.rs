@@ -46,14 +46,15 @@ fn create_archive_using_progress(
     progress: &crate::Progress,
     write: impl FnOnce(&Path, fs::File) -> Result<()>,
 ) -> Result<()> {
-    let staging = tempfile::Builder::new()
-        .prefix("starcrypt-vault-")
-        .tempdir()?;
     let name = destination
         .file_stem()
         .and_then(|name| name.to_str())
         .context("Archive needs a UTF-8 filename")?;
-    crate::fsutil::safe_name(name)?;
+    crate::fsutil::safe_archive_component(name)
+        .context("Archive filename stem cannot be used as a safe internal vault folder name")?;
+    let staging = tempfile::Builder::new()
+        .prefix("starcrypt-vault-")
+        .tempdir()?;
     let vault = staging.path().join(name);
     // Only ciphertext is staged: the archive contains an ordinary vault folder.
     crate::create::create_with_progress(source, &vault, password, progress)?;
@@ -93,7 +94,7 @@ fn visit(
             for entry in entries {
                 let child = entry.file_name();
                 let child = child.to_str().context("Non-UTF-8 encrypted filename")?;
-                crate::fsutil::safe_name(child)?;
+                crate::fsutil::safe_archive_component(child)?;
                 walk(&entry.path(), &format!("{name}/{child}"), add)?;
             }
         }
@@ -103,6 +104,7 @@ fn visit(
         .file_name()
         .and_then(|name| name.to_str())
         .context("Invalid vault name")?;
+    crate::fsutil::safe_archive_component(name)?;
     walk(vault, name, &mut add)
 }
 
@@ -157,6 +159,23 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::PathBuf;
+
+    #[test]
+    fn invalid_internal_name_fails_before_source_access_or_packaging() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("backup:2026.zip");
+        let error = create_archive_using(
+            &temp.path().join("missing-source"),
+            &destination,
+            "test password",
+            |_, _| panic!("Invalid archive name reached packaging"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Unsafe archive entry path"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(temp.path())?.count(), 0);
+        Ok(())
+    }
     #[test]
     #[cfg(unix)]
     #[ignore = "child process used only by abrupt_archive_process_termination_keeps_source"]

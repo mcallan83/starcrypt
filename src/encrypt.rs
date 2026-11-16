@@ -4,7 +4,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{AeadInPlace, KeyInit, OsRng, rand_core::RngCore},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use oxcrypt_core::vault::operations::VaultOperations;
 use std::{
     fs::{self, File},
@@ -22,6 +22,43 @@ use zeroize::Zeroizing;
 const CHUNK_SIZE: usize = 32 * 1024;
 // Amortize queue and output-lock overhead across 32 format chunks.
 const BATCH_SIZE: usize = 1024 * 1024;
+
+// Ignore access time: our own reads may change it.
+fn validate_source(expected: &fs::Metadata, actual: &fs::Metadata) -> Result<()> {
+    ensure!(
+        actual.is_file()
+            && expected.len() == actual.len()
+            && expected.modified()? == actual.modified()?,
+        "Source file changed during encryption"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            expected.dev() == actual.dev()
+                && expected.ino() == actual.ino()
+                && expected.ctime() == actual.ctime()
+                && expected.ctime_nsec() == actual.ctime_nsec(),
+            "Source file changed during encryption"
+        );
+    }
+    Ok(())
+}
+
+fn read_batch(input: &mut impl Read, capacity: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let mut plaintext = Zeroizing::new(vec![0u8; capacity]);
+    let mut count = 0;
+    while count < plaintext.len() {
+        match input.read(&mut plaintext[count..]) {
+            Ok(0) => break,
+            Ok(n) => count += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    plaintext.truncate(count);
+    Ok(plaintext)
+}
 
 struct Output {
     file: Mutex<File>,
@@ -108,6 +145,7 @@ impl EncryptionPool {
     ) -> Result<()> {
         let result = (|| -> Result<()> {
             let mut input = File::open(source)?;
+            validate_source(&metadata, &input.metadata()?)?;
             let mut key = Zeroizing::new([0u8; 32]);
             OsRng.fill_bytes(&mut *key);
             let header = oxcrypt_core::fs::file::encrypt_file_header(&key, ops.master_key())?;
@@ -120,7 +158,11 @@ impl EncryptionPool {
             }
             let mut file = options.open(encrypted)?;
             file.write_all(&header)?;
-            let read_size = (metadata.len().min(BATCH_SIZE as u64) as usize).max(1);
+            // Every non-final batch must end on a format chunk boundary, even
+            // if the source grows after its metadata was collected.
+            let read_size = (metadata.len().min(BATCH_SIZE as u64) as usize)
+                .max(1)
+                .next_multiple_of(CHUNK_SIZE);
             let output = Arc::new(Output {
                 file: Mutex::new(file),
                 key,
@@ -132,21 +174,14 @@ impl EncryptionPool {
                 progress: self.progress.clone(),
             });
             let mut first_chunk = 0;
+            let mut bytes_read = 0u64;
             loop {
-                let mut plaintext = Zeroizing::new(vec![0u8; read_size]);
-                let mut count = 0;
-                while count < plaintext.len() {
-                    match input.read(&mut plaintext[count..]) {
-                        Ok(0) => break,
-                        Ok(n) => count += n,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => return Err(e.into()),
-                    }
-                }
+                let plaintext = read_batch(&mut input, read_size)?;
+                let count = plaintext.len();
                 if count == 0 {
                     break;
                 }
-                plaintext.truncate(count);
+                bytes_read += count as u64;
                 output.pending.fetch_add(1, Ordering::Relaxed);
                 self.sender
                     .send(Batch {
@@ -156,7 +191,18 @@ impl EncryptionPool {
                     })
                     .map_err(|_| anyhow!("Encryption workers stopped"))?;
                 first_chunk += count.div_ceil(CHUNK_SIZE) as u64;
+                // A short batch reached EOF. Never resume after publishing a
+                // partial chunk, even if another process subsequently appends.
+                if count < read_size {
+                    break;
+                }
             }
+            ensure!(
+                bytes_read == output.metadata.len(),
+                "Source file changed during encryption"
+            );
+            validate_source(&output.metadata, &input.metadata()?)?;
+            validate_source(&output.metadata, &fs::metadata(source)?)?;
             // Empty files retain only the authenticated header.
             output.complete()
         })();
@@ -230,6 +276,97 @@ fn with_workers_progress(
 mod tests {
     use super::*;
     use oxcrypt_core::{crypto::keys::MasterKey, vault::path::DirId};
+
+    #[test]
+    fn changed_source_size_is_rejected_before_creating_ciphertext() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let ops = VaultOperations::new(temp.path(), MasterKey::random()?);
+        let source = temp.path().join("source");
+        let destination = temp.path().join("encrypted");
+        for (before, after) in [
+            (0, 1),
+            (1, 2), // Previously succeeded with corrupt ciphertext.
+            (CHUNK_SIZE - 1, CHUNK_SIZE + 1),
+            (CHUNK_SIZE + 1, 2 * CHUNK_SIZE + 1),
+            (BATCH_SIZE - 1, BATCH_SIZE + 1),
+            (2, 1),
+            (CHUNK_SIZE + 1, 0),
+        ] {
+            fs::write(&source, vec![7; before])?;
+            let metadata = fs::metadata(&source)?;
+            fs::write(&source, vec![8; after])?;
+            let error = with_workers(2, |pool| {
+                pool.encrypt_file(&ops, &source, &destination, metadata)
+            })
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("Source file changed during encryption"));
+            assert!(error.to_string().contains(&source.display().to_string()));
+            assert!(!destination.exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_validation_detects_changes_after_reading() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        fs::write(&source, b"a")?;
+        let mut input = File::open(&source)?;
+        let metadata = input.metadata()?;
+        assert_eq!(&**read_batch(&mut input, CHUNK_SIZE)?, b"a");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&source)?
+            .write_all(b"b")?;
+        assert!(validate_source(&metadata, &input.metadata()?).is_err());
+
+        let metadata = input.metadata()?;
+        fs::write(&source, b"cd")?;
+        input.set_times(
+            fs::FileTimes::new()
+                .set_modified(metadata.modified()? + std::time::Duration::from_secs(1)),
+        )?;
+        assert!(validate_source(&metadata, &input.metadata()?).is_err());
+
+        #[cfg(unix)]
+        {
+            let metadata = input.metadata()?;
+            let replacement = temp.path().join("replacement");
+            fs::write(&replacement, b"ef")?;
+            File::open(&replacement)?
+                .set_times(fs::FileTimes::new().set_modified(metadata.modified()?))?;
+            fs::rename(replacement, &source)?;
+            assert!(validate_source(&metadata, &fs::metadata(&source)?).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_reads_fill_chunks_across_short_reads_and_interruptions() -> Result<()> {
+        struct ShortReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            interrupt: bool,
+        }
+        impl Read for ShortReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = buffer.len().min(17);
+                self.bytes.read(&mut buffer[..count])
+            }
+        }
+        let bytes = vec![42; CHUNK_SIZE + 1];
+        let mut input = ShortReader {
+            bytes: std::io::Cursor::new(bytes.clone()),
+            interrupt: false,
+        };
+        assert_eq!(&**read_batch(&mut input, CHUNK_SIZE)?, &bytes[..CHUNK_SIZE]);
+        assert_eq!(&**read_batch(&mut input, CHUNK_SIZE)?, &bytes[CHUNK_SIZE..]);
+        assert!(read_batch(&mut input, CHUNK_SIZE)?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn existing_ciphertext_is_never_overwritten() -> Result<()> {

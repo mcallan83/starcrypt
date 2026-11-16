@@ -3,6 +3,24 @@ use starcrypt::{ArchiveFormat, create_archive, create_vault};
 use std::fs;
 
 #[test]
+fn unsafe_internal_archive_names_are_rejected_without_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    fs::create_dir(&source)?;
+    fs::write(source.join("payload"), b"original")?;
+    for (extension, format) in [("zip", ArchiveFormat::Zip), ("7z", ArchiveFormat::SevenZip)] {
+        let destination = temp.path().join(format!("backup:2026.{extension}"));
+        let error = create_archive(&source, &destination, "test password", format).unwrap_err();
+        ensure!(format!("{error:#}").contains("Unsafe archive entry path"));
+        ensure!(error.to_string().contains("Archive filename stem"));
+        ensure!(!destination.exists());
+    }
+    ensure!(fs::read(source.join("payload"))? == b"original");
+    ensure!(fs::read_dir(temp.path())?.count() == 1);
+    Ok(())
+}
+
+#[test]
 #[cfg(unix)]
 fn unreadable_source_fails_without_output_or_source_changes() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

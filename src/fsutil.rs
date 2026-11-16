@@ -72,6 +72,14 @@ pub(crate) fn safe_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+// Archive components also exclude Windows drive prefixes and alternate streams.
+// Use the same rule when choosing the internal vault name and unpacking entries.
+pub(crate) fn safe_archive_component(name: &str) -> Result<()> {
+    safe_name(name)?;
+    ensure!(!name.contains(':'), "Unsafe archive entry path");
+    Ok(())
+}
+
 #[cfg(unix)]
 pub(crate) fn copy_symlink_times(destination: &Path, metadata: &fs::Metadata) -> Result<()> {
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};

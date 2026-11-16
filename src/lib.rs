@@ -10,6 +10,7 @@ use std::{collections::HashSet, path::Path};
 mod archive;
 mod archive_read;
 mod create;
+mod decrypt;
 mod encrypt;
 mod extract;
 mod fsutil;
@@ -51,6 +52,8 @@ pub fn create_vault_with_progress(
 /// Package a new encrypted vault folder into a ZIP or 7z archive.
 /// Uses the same macOS volume-root exclusions as [`create_vault`].
 /// The explicit format determines the archive type, regardless of the filename.
+/// Its UTF-8 filename stem becomes the internal vault folder name and must not
+/// contain `:` or `\`.
 /// Unpack the archive before opening it with Cryptomator or [`extract_vault`].
 pub fn create_archive(
     source: impl AsRef<Path>,

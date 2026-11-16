@@ -2,6 +2,7 @@
 #[cfg(unix)]
 use crate::fsutil::copy_symlink_times;
 use crate::{
+    decrypt::{self, Source},
     fsutil::{copy_times, safe_name},
     vault_read::{strict_list, validate_file},
 };
@@ -16,10 +17,8 @@ use oxcrypt_core::{
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::Write,
     path::Path,
 };
-use zeroize::Zeroizing;
 
 pub(crate) fn export(
     ops: &VaultOperations,
@@ -33,42 +32,16 @@ pub(crate) fn export(
     let (bytes, files) = scan_vault(ops, id, &mut directories)?;
     progress.totals(bytes, files);
     progress.phase("Decrypting");
-    export_with_writer(
-        ops,
-        id,
-        destination,
-        visited,
-        Some(&directories),
-        &mut |reader, path| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)?;
-            copy_decrypted_file_with_progress(reader, &mut file, progress)?;
-            progress.advance(0, 1);
-            Ok(())
-        },
-    )
-}
-#[cfg(test)]
-fn copy_decrypted_file(reader: &mut VaultFileReaderSync, writer: &mut impl Write) -> Result<()> {
-    copy_decrypted_file_with_progress(reader, writer, &crate::Progress::default())
-}
-fn copy_decrypted_file_with_progress(
-    reader: &mut VaultFileReaderSync,
-    writer: &mut impl Write,
-    progress: &crate::Progress,
-) -> Result<()> {
-    let mut offset = 0;
-    while offset < reader.plaintext_size() {
-        let chunk = Zeroizing::new(reader.read_range(offset, 32 * 1024)?);
-        ensure!(!chunk.is_empty(), "Unexpected end of encrypted file");
-        writer.write_all(&chunk)?;
-        offset += chunk.len() as u64;
-        progress.advance(chunk.len() as u64, 0);
-    }
-    writer.flush()?;
-    Ok(())
+    decrypt::with_pool(ops, progress, |pool| {
+        export_with_writer(
+            ops,
+            id,
+            destination,
+            visited,
+            Some(&directories),
+            &mut |source, path| pool.decrypt_file(source, path),
+        )
+    })
 }
 fn export_with_writer(
     ops: &VaultOperations,
@@ -76,7 +49,7 @@ fn export_with_writer(
     destination: &Path,
     visited: &mut HashSet<String>,
     directories: Option<&HashMap<String, fs::Metadata>>,
-    write_file: &mut impl FnMut(&mut VaultFileReaderSync, &Path) -> Result<()>,
+    write_file: &mut impl FnMut(Source, &Path) -> Result<()>,
 ) -> Result<()> {
     let directory_metadata = match directories {
         Some(directories) => directories
@@ -98,13 +71,19 @@ fn export_with_writer(
                 validate_file(ops, &info.encrypted_path, metadata.len())?;
                 // Listing supplies the actual on-disk path, including standard
                 // shortened names that oxcrypt's name-lookup helper miscalculates.
-                let mut reader = VaultFileReaderSync::open_with_cipher(
+                let reader = VaultFileReaderSync::open_with_cipher(
                     &info.encrypted_path,
                     ops.master_key(),
                     ops.cipher_combo(),
                 )?;
-                write_file(&mut reader, &path)?;
-                copy_times(&path, &metadata)?;
+                write_file(
+                    Source {
+                        reader,
+                        path: info.encrypted_path,
+                        metadata,
+                    },
+                    &path,
+                )?;
             }
             DirEntry::Directory(info) => {
                 fs::create_dir(&path)?;
@@ -125,7 +104,7 @@ fn export_with_writer(
                     copy_symlink_times(&path, &metadata)?;
                 }
                 #[cfg(not(unix))]
-                bail!("Symlink extraction is currently supported only on Unix");
+                anyhow::bail!("Symlink extraction is currently supported only on Unix");
             }
         }
     }
@@ -185,6 +164,8 @@ fn scan_vault(
 mod tests {
     use super::*;
     use crate::{create::create, fsutil::new_output, vault_read::open_vault};
+    use std::io::Write;
+    use zeroize::Zeroizing;
     #[test]
     #[cfg(unix)]
     fn disk_full_during_extraction_cleans_partial_output() -> Result<()> {
@@ -222,18 +203,18 @@ mod tests {
                 &output,
                 &mut HashSet::new(),
                 None,
-                &mut |reader, path| {
+                &mut |mut source, path| {
                     let file = fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)
                         .open(path)?;
-                    copy_decrypted_file(
-                        reader,
-                        &mut FullWriter {
-                            file,
-                            remaining: 100,
-                        },
-                    )
+                    let plaintext = Zeroizing::new(source.reader.read_range(0, 65_537)?);
+                    FullWriter {
+                        file,
+                        remaining: 100,
+                    }
+                    .write_all(&plaintext)?;
+                    Ok(())
                 },
             )
         })

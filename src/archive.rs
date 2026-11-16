@@ -95,12 +95,21 @@ fn visit(
 fn write_zip(vault: &Path, file: fs::File) -> Result<()> {
     let mut writer = zip::ZipWriter::new(file);
     visit(vault, |path, name, metadata| {
+        let modified = metadata.modified()?;
+        let datetime = time::OffsetDateTime::from(modified);
+        let dos_time = zip::DateTime::try_from(time::PrimitiveDateTime::new(
+            datetime.date(),
+            datetime.time(),
+        ))
+        .unwrap_or_default();
         let mut options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
+            // Some extractors use only the standard field, especially for folders.
+            .last_modified_time(dos_time)
             .large_file(metadata.len() >= u32::MAX as u64)
             .into_full_options();
         // Extended timestamp field: UTC modification time, independent of local timezone.
-        if let Ok(seconds) = metadata.modified()?.duration_since(std::time::UNIX_EPOCH)
+        if let Ok(seconds) = modified.duration_since(std::time::UNIX_EPOCH)
             && let Ok(seconds) = u32::try_from(seconds.as_secs())
         {
             let mut timestamp = vec![1];
@@ -143,6 +152,46 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::PathBuf;
+
+    #[test]
+    fn zip_standard_timestamps_preserve_files_and_directories() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let vault = temp.path().join("vault");
+        fs::create_dir_all(vault.join("nested/empty"))?;
+        fs::write(vault.join("nested/data"), b"ciphertext")?;
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_001);
+        for name in ["nested/data", "nested/empty", "nested", ""] {
+            fs::File::open(vault.join(name))?
+                .set_times(fs::FileTimes::new().set_modified(modified))?;
+        }
+        let archive = temp.path().join("vault.zip");
+        write_zip(&vault, fs::File::create(&archive)?)?;
+        let mut archive = zip::ZipArchive::new(fs::File::open(archive)?)?;
+        for name in [
+            "vault/",
+            "vault/nested/",
+            "vault/nested/empty/",
+            "vault/nested/data",
+        ] {
+            let entry = archive.by_name(name)?;
+            let standard = time::PrimitiveDateTime::try_from(entry.last_modified().unwrap())?;
+            // DOS time has two-second precision; the UTC extra field retains seconds.
+            assert_eq!(
+                standard.assume_utc().unix_timestamp(),
+                1_600_000_000,
+                "{name}"
+            );
+            assert!(
+                entry.extra_data_fields().any(|field| matches!(
+                    field,
+                    zip::extra_fields::ExtraField::ExtendedTimestamp(timestamp)
+                        if timestamp.mod_time() == Some(1_600_000_001)
+                )),
+                "Missing UTC modification time for {name}"
+            );
+        }
+        Ok(())
+    }
 
     fn create_archive_using(
         source: &Path,

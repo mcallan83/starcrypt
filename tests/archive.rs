@@ -161,6 +161,8 @@ fn archived_encrypted_vault_round_trip(format: ArchiveFormat, external: bool) ->
         source.join("nested/café.bin"),
         source.join("zero"),
         source.join("nested"),
+        source.join("nested/empty"),
+        source.clone(),
     ] {
         fs::File::open(path)?.set_times(fs::FileTimes::new().set_modified(timestamp))?;
     }
@@ -176,7 +178,13 @@ fn archived_encrypted_vault_round_trip(format: ArchiveFormat, external: bool) ->
         fs::metadata(direct.join("nested/café.bin"))?.modified()?,
         timestamp
     );
-    assert_eq!(fs::metadata(direct.join("nested"))?.modified()?, timestamp);
+    for path in ["", "nested", "nested/empty"] {
+        assert_eq!(
+            fs::metadata(direct.join(path))?.modified()?,
+            timestamp,
+            "Direct extraction changed folder timestamp: {path}"
+        );
+    }
     assert!(direct.join("nested/empty").is_dir());
     assert!(extract_vault(&archive, temp.path().join("direct-wrong"), "wrong password").is_err());
     assert!(!temp.path().join("direct-wrong").exists());
@@ -239,7 +247,7 @@ fn archived_encrypted_vault_round_trip(format: ArchiveFormat, external: bool) ->
     // Independent extractors must restore archive entry timestamps so extraction
     // of the vault retains the source modification times.
     if external {
-        for path in ["nested/café.bin", "zero", "nested"] {
+        for path in ["nested/café.bin", "zero", "", "nested", "nested/empty"] {
             assert_eq!(
                 fs::metadata(output.join(path))?.modified()?,
                 timestamp,

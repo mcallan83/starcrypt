@@ -203,12 +203,20 @@ fn archive_timestamp_precision_matches_the_supported_formats() -> Result<()> {
     use std::time::{Duration, UNIX_EPOCH};
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");
-    fs::create_dir(&source)?;
+    fs::create_dir_all(source.join("nested/empty"))?;
     let path = source.join("data");
     fs::write(&path, b"contents")?;
-    fs::File::open(&path)?.set_times(
-        fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789)),
-    )?;
+    for entry in [
+        &path,
+        &source.join("nested/empty"),
+        &source.join("nested"),
+        &source,
+    ] {
+        fs::File::open(entry)?.set_times(
+            fs::FileTimes::new()
+                .set_modified(UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789)),
+        )?;
+    }
     for (extension, format, nanos) in [
         ("zip", starcrypt::ArchiveFormat::Zip, 0),
         ("7z", starcrypt::ArchiveFormat::SevenZip, 123_456_700),
@@ -217,10 +225,13 @@ fn archive_timestamp_precision_matches_the_supported_formats() -> Result<()> {
         starcrypt::create_archive(&source, &archive, "test password", format)?;
         let output = temp.path().join(format!("output-{extension}"));
         extract_vault(&archive, &output, "test password")?;
-        assert_eq!(
-            fs::metadata(output.join("data"))?.modified()?,
-            UNIX_EPOCH + Duration::new(1_600_000_000, nanos)
-        );
+        for entry in ["data", "", "nested", "nested/empty"] {
+            assert_eq!(
+                fs::metadata(output.join(entry))?.modified()?,
+                UNIX_EPOCH + Duration::new(1_600_000_000, nanos),
+                "Timestamp precision changed for {extension}: {entry}"
+            );
+        }
         assert_eq!(fs::read(output.join("data"))?, b"contents");
     }
     Ok(())

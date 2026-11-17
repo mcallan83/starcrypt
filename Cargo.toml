@@ -1,6 +1,6 @@
 [package]
 name = "starcrypt"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Create and extract Cryptomator vaults without mounting"

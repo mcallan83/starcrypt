@@ -83,14 +83,14 @@ fn create_impl(
             import(&ops, source, &root, volume_root, pool, &directories)
         })?;
         progress.phase("Finalizing vault");
-        finalize_shortened_names(destination, ops.shortening_threshold())
+        finalize_entries(destination, &ops)
     })
 }
 
 // oxcrypt currently hashes the encrypted base64 name without the .c9r suffix.
 // Cryptomator hashes and stores the complete name. Finalize only after import,
 // because oxcrypt's write/path-lookup helpers still expect their original layout.
-fn finalize_shortened_names(vault: &Path, threshold: usize) -> Result<()> {
+fn finalize_entries(vault: &Path, ops: &VaultOperations) -> Result<()> {
     for shard in fs::read_dir(vault.join("d"))? {
         for storage in fs::read_dir(shard?.path())? {
             let storage = storage?.path();
@@ -98,6 +98,16 @@ fn finalize_shortened_names(vault: &Path, threshold: usize) -> Result<()> {
             for entry in fs::read_dir(&storage)? {
                 let entry = entry?;
                 let path = entry.path();
+                // Clients may read directory times from the named entry or its
+                // marker instead of the separate ciphertext contents directory.
+                // Do this before shortening so renames retain the same times.
+                if entry.file_type()?.is_dir() && path.join("dir.c9r").is_file() {
+                    let marker = path.join("dir.c9r");
+                    let id = DirId::from_raw(fs::read_to_string(&marker)?.trim());
+                    let metadata = fs::metadata(ops.calculate_directory_storage_path(&id)?)?;
+                    copy_times(&marker, &metadata)?;
+                    copy_times(&path, &metadata)?;
+                }
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let shortened = name.ends_with(".c9s");
                 let full_name = if shortened {
@@ -107,7 +117,7 @@ fn finalize_shortened_names(vault: &Path, threshold: usize) -> Result<()> {
                     } else {
                         format!("{original}.c9r")
                     }
-                } else if name.ends_with(".c9r") && name.len() > threshold {
+                } else if name.ends_with(".c9r") && name.len() > ops.shortening_threshold() {
                     name
                 } else {
                     continue;
@@ -290,6 +300,74 @@ fn is_volume_bookkeeping(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_times_cover_entries_markers_and_contents() -> Result<()> {
+        use oxcrypt_core::vault::operations::DirEntry;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        fn check(ops: &VaultOperations, id: &DirId, source: &Path) -> Result<()> {
+            let expected = fs::metadata(source)?.modified()?;
+            assert_eq!(
+                fs::metadata(ops.calculate_directory_storage_path(id)?)?.modified()?,
+                expected
+            );
+            for entry in crate::vault_read::strict_list(ops, id)? {
+                if let DirEntry::Directory(info) = entry {
+                    let child = source.join(&info.name);
+                    let expected = fs::metadata(&child)?.modified()?;
+                    for path in [
+                        info.encrypted_path.clone(),
+                        info.encrypted_path.join("dir.c9r"),
+                    ] {
+                        assert_eq!(fs::metadata(&path)?.modified()?, expected, "{path:?}");
+                    }
+                    check(ops, &info.directory_id, &child)?;
+                }
+            }
+            Ok(())
+        }
+
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        let long = "d".repeat(180);
+        // 147 bytes exercises the boundary where adding .c9r requires shortening.
+        let boundary = "b".repeat(147);
+        let paths = [
+            "".to_owned(),
+            "ordinary".into(),
+            "ordinary/empty".into(),
+            long.clone(),
+            format!("{long}/nested"),
+            boundary,
+        ];
+        for path in &paths {
+            fs::create_dir_all(source.join(path))?;
+        }
+        fs::write(source.join("ordinary/data"), b"unchanged contents")?;
+        for (index, path) in paths.iter().enumerate() {
+            fs::File::open(source.join(path))?.set_times(fs::FileTimes::new().set_modified(
+                UNIX_EPOCH + Duration::new(1_600_000_000 + index as u64, 123_456_789),
+            ))?;
+        }
+        let vault = temp.path().join("vault");
+        crate::create_vault(&source, &vault, "test password")?;
+        let ops = VaultOperations::open(&vault, "test password")?;
+        check(&ops, &DirId::root(), &source)?;
+        let output = temp.path().join("output");
+        crate::extract_vault(&vault, &output, "test password")?;
+        for path in &paths {
+            assert_eq!(
+                fs::metadata(output.join(path))?.modified()?,
+                fs::metadata(source.join(path))?.modified()?
+            );
+        }
+        assert_eq!(
+            fs::read(output.join("ordinary/data"))?,
+            b"unchanged contents"
+        );
+        Ok(())
+    }
 
     fn create_with_volume_policy(
         source: &Path,

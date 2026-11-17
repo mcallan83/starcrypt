@@ -30,6 +30,17 @@ fn create_archive_using_progress(
     progress: &crate::Progress,
     write: impl FnOnce(&Path, fs::File) -> Result<()>,
 ) -> Result<()> {
+    create_archive_with_key(source, destination, password, progress, write, |_| Ok(()))
+}
+
+pub(crate) fn create_archive_with_key(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    progress: &crate::Progress,
+    write: impl FnOnce(&Path, fs::File) -> Result<()>,
+    key_ready: impl FnOnce(&oxcrypt_core::crypto::keys::MasterKey) -> Result<()>,
+) -> Result<()> {
     let name = destination
         .file_stem()
         .and_then(|name| name.to_str())
@@ -41,7 +52,14 @@ fn create_archive_using_progress(
         .tempdir()?;
     let vault = staging.path().join(name);
     // Only ciphertext is staged: the archive contains an ordinary vault folder.
-    crate::create::create_with_progress(source, &vault, password, progress)?;
+    crate::create::create_with_key(
+        source,
+        &vault,
+        password,
+        crate::fsutil::is_macos_volume_root(source)?,
+        progress,
+        key_ready,
+    )?;
     progress.phase("Packaging archive");
     let parent = destination
         .parent()
@@ -92,7 +110,7 @@ fn visit(
     walk(vault, name, &mut add)
 }
 
-fn write_zip(vault: &Path, file: fs::File) -> Result<()> {
+pub(crate) fn write_zip(vault: &Path, file: fs::File) -> Result<()> {
     let mut writer = zip::ZipWriter::new(file);
     visit(vault, |path, name, metadata| {
         let modified = metadata.modified()?;
@@ -128,7 +146,7 @@ fn write_zip(vault: &Path, file: fs::File) -> Result<()> {
     Ok(())
 }
 
-fn write_seven_zip(vault: &Path, file: fs::File) -> Result<()> {
+pub(crate) fn write_seven_zip(vault: &Path, file: fs::File) -> Result<()> {
     use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod};
     let mut writer = ArchiveWriter::new(file)?;
     // Ciphertext is incompressible; avoid spending CPU compressing it again.

@@ -2,9 +2,9 @@
 
 <img src="docs/assets/icon.png" alt="StarCrypt icon" width="160">
 
-StarCrypt is a fast, lightweight command-line tool for creating and extracting [Cryptomator](https://cryptomator.org/) encrypted vaults.
+StarCrypt is a Rust CLI and library for creating and extracting Cryptomator](https://cryptomator.org/) vaults without mounting them. 
 
-Cryptomator's desktop app provides a graphical way to work with vaults. On macOS, files in a vault are accessed through a mounted volume, typically via WebDAV or FUSE. That workflow can add overhead with large vaults and may not preserve original timestamps.
+The official Cryptomator app provides a graphical way to work with vaults. On macOS, files in a vault are accessed through a mounted volume, typically via WebDAV or FUSE. That workflow can add overhead with large vaults and may not preserve original timestamps.
 
 StarCrypt offers a complementary command-line workflow: it creates and extracts Cryptomator-compatible vaults directly, without mounting them, and while preserving file modification times. Multithreaded processing and low memory use make it well suited to large directories.
 
@@ -59,6 +59,16 @@ The destination extension determines the format: `.zip` creates a ZIP archive, `
 ZIP and 7z output package an encrypted Cryptomator vault into a single archive file. The archive is not separately encrypted or password-protected; encryption is provided by the vault itself. These formats change only how the vault is packaged, making it easier to store or transfer as one file rather than a folder of many files.
 
 The archive filename stem becomes the folder name inside the archive. It must be UTF-8 and cannot contain `:` or `\`; incompatible names are rejected before encryption starts.
+
+To also print a Cryptomator recovery key after successful creation:
+
+```sh
+starcrypt create ./photos ./vault --recovery-key
+```
+
+This works with folder, ZIP, and 7z output. Store the 44-word phrase securely
+and separately: it grants access without the password. It is printed to stdout
+and is never saved inside the vault.
 
 ### Extract a Vault
 

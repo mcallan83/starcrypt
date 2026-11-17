@@ -39,6 +39,23 @@ fn create_impl(
     volume_root: bool,
     progress: &crate::Progress,
 ) -> Result<()> {
+    create_with_key(source, destination, password, volume_root, progress, |_| {
+        Ok(())
+    })
+}
+
+pub(crate) fn create_with_key(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    volume_root: bool,
+    progress: &crate::Progress,
+    key_ready: impl FnOnce(&MasterKey) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        std::env::var_os("OXCRYPT_FAST_KDF").is_none(),
+        "Unset OXCRYPT_FAST_KDF before creating vaults"
+    );
     new_output(destination, || {
         progress.phase("Scanning source");
         let mut directories = HashMap::new();
@@ -83,7 +100,8 @@ fn create_impl(
             import(&ops, source, &root, volume_root, pool, &directories)
         })?;
         progress.phase("Finalizing vault");
-        finalize_entries(destination, &ops)
+        finalize_entries(destination, &ops)?;
+        key_ready(ops.master_key())
     })
 }
 

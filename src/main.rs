@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use starcrypt::{
     ArchiveFormat, Progress, create_archive_with_progress, create_vault_with_progress,
-    extract_vault_with_progress,
+    create_with_recovery_key, extract_vault_with_progress,
 };
 use std::{
     io::{BufRead, IsTerminal, Write},
@@ -36,6 +36,9 @@ enum Command {
         /// Override the destination format (default: infer from .zip or .7z, otherwise folder).
         #[arg(long, value_enum)]
         format: Option<OutputFormat>,
+        /// Print the 44-word recovery key to stdout after successful creation.
+        #[arg(long)]
+        recovery_key: bool,
     },
     /// Decrypt a vault folder or a ZIP/7z containing a vault into a new folder.
     Extract {
@@ -72,6 +75,7 @@ fn main() -> Result<()> {
             source,
             vault,
             format,
+            recovery_key,
         } => {
             let source = source
                 .canonicalize()
@@ -84,14 +88,30 @@ fn main() -> Result<()> {
                 OutputFormat::SevenZip => Some(ArchiveFormat::SevenZip),
             };
             let password = password(true)?;
+            let mut phrase = None;
             with_status(cli.quiet, |progress| {
-                if let Some(format) = format {
+                if recovery_key {
+                    phrase = Some(create_with_recovery_key(
+                        &source,
+                        &destination,
+                        &password,
+                        format,
+                        progress,
+                    )?);
+                    Ok(())
+                } else if let Some(format) = format {
                     create_archive_with_progress(&source, &destination, &password, format, progress)
                 } else {
                     create_vault_with_progress(&source, &destination, &password, progress)
                 }
             })?;
             println!("Created vault: {}", destination.display());
+            if let Some(phrase) = phrase {
+                println!(
+                    "Recovery key (store securely; grants access without your password):\n{}",
+                    *phrase
+                );
+            }
         }
         Command::Extract { vault, destination } => {
             let vault = vault.canonicalize().context("Cannot resolve vault")?;

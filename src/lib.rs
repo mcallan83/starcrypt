@@ -15,6 +15,7 @@ mod encrypt;
 mod extract;
 mod fsutil;
 mod progress;
+mod recovery;
 mod vault_read;
 
 pub use archive::ArchiveFormat;
@@ -129,4 +130,52 @@ pub fn extract_vault_with_progress(
             progress,
         )
     })
+}
+
+/// Create a folder vault or archive and return its Cryptomator recovery phrase.
+/// The phrase grants access without the password. Store it separately and securely.
+/// Returns the phrase only after the complete destination has been saved successfully.
+pub fn create_with_recovery_key(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: &str,
+    format: Option<ArchiveFormat>,
+    progress: &Progress,
+) -> Result<zeroize::Zeroizing<String>> {
+    ensure!(!password.is_empty(), "Password cannot be empty");
+    let source = source
+        .as_ref()
+        .canonicalize()
+        .context("Cannot resolve source folder")?;
+    ensure!(source.is_dir(), "Source must be a folder");
+    let destination = fsutil::destination_path(destination.as_ref(), &source)?;
+    let mut phrase = None;
+    let key_ready = |key: &oxcrypt_core::crypto::keys::MasterKey| {
+        phrase = Some(recovery::encode(key)?);
+        Ok(())
+    };
+    if let Some(format) = format {
+        let write = match format {
+            ArchiveFormat::Zip => archive::write_zip,
+            ArchiveFormat::SevenZip => archive::write_seven_zip,
+        };
+        archive::create_archive_with_key(
+            &source,
+            &destination,
+            password,
+            progress,
+            write,
+            key_ready,
+        )?;
+    } else {
+        create::create_with_key(
+            &source,
+            &destination,
+            password,
+            fsutil::is_macos_volume_root(&source)?,
+            progress,
+            key_ready,
+        )?;
+    }
+    phrase.context("Recovery key was not generated")
 }

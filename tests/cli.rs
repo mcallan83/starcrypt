@@ -74,6 +74,7 @@ fn quiet_suppresses_progress_but_preserves_results_and_errors() -> Result<()> {
     );
     ensure!(output.stderr.is_empty());
     ensure!(String::from_utf8_lossy(&output.stdout).contains("Created vault:"));
+    ensure!(!String::from_utf8_lossy(&output.stdout).contains("Recovery key"));
     let restored = temp.path().join("restored");
     let output = run(
         &[
@@ -322,5 +323,76 @@ fn malformed_master_key_metadata_exits_normally_without_output() -> Result<()> {
     let restored = temp.path().join("valid-output");
     starcrypt::extract_vault(&vault, &restored, "test password")?;
     ensure!(fs::read(restored.join("payload"))? == b"original");
+    Ok(())
+}
+
+#[test]
+fn recovery_key_matches_created_folder_and_archives() -> Result<()> {
+    use oxcrypt_core::{
+        crypto::keys::MasterKey,
+        vault::{master_key::create_masterkey_file, operations::VaultOperations, path::DirId},
+    };
+    let words: Vec<_> = include_str!("../src/recovery_words.txt").lines().collect();
+    for name in ["vault", "vault.zip", "vault.7z"] {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        fs::create_dir(&source)?;
+        fs::write(source.join("hello"), b"recover me")?;
+        let destination = temp.path().join(name);
+        let args = [
+            "--quiet".as_ref(),
+            "create".as_ref(),
+            source.as_os_str(),
+            destination.as_os_str(),
+            "--recovery-key".as_ref(),
+        ];
+        let output = run(&args, b"public test password\n");
+        ensure!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        ensure!(output.stderr.is_empty());
+        let stdout = String::from_utf8(output.stdout)?;
+        let phrase = stdout.lines().last().unwrap();
+        ensure!(phrase.split_whitespace().count() == 44);
+        // Decode without the production encoder, then use the recovered key
+        // to authenticate and decrypt data from the actual output vault.
+        let indices: Vec<_> = phrase
+            .split_whitespace()
+            .map(|word| {
+                words
+                    .iter()
+                    .position(|&candidate| candidate == word)
+                    .unwrap()
+            })
+            .collect();
+        let mut raw = zeroize::Zeroizing::new(Vec::new());
+        for pair in indices.as_chunks::<2>().0 {
+            let combined = ((pair[0] as u32) << 12) | pair[1] as u32;
+            raw.extend_from_slice(&combined.to_be_bytes()[1..]);
+        }
+        let key = MasterKey::new(raw[..32].try_into()?, raw[32..64].try_into()?)?;
+        let unpacked = temp.path().join("unpacked");
+        let vault = if name.ends_with(".zip") {
+            zip::ZipArchive::new(fs::File::open(&destination)?)?.extract(&unpacked)?;
+            unpacked.join("vault")
+        } else if name.ends_with(".7z") {
+            sevenz_rust2::decompress_file(&destination, &unpacked)?;
+            unpacked.join("vault")
+        } else {
+            destination.clone()
+        };
+        // Simulate password recovery using the decoded key and a new password.
+        fs::write(
+            vault.join("masterkey.cryptomator"),
+            create_masterkey_file(&key, "replacement public password")?,
+        )?;
+        let ops = VaultOperations::open(&vault, "replacement public password")?;
+        ensure!(ops.read_file(&DirId::root(), "hello")?.content == b"recover me");
+        let failed = run(&args, b"public test password\n");
+        ensure!(!failed.status.success());
+        ensure!(!String::from_utf8_lossy(&failed.stdout).contains("Recovery key"));
+    }
     Ok(())
 }

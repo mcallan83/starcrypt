@@ -37,6 +37,8 @@ the Java suite does not exercise them.
 - Abrupt termination can leave temporary encrypted staging directories.
 - Disk-full behavior is tested with injected failures, rather than filling a disk.
 - Interoperability tests are not a cryptographic audit or proof of full Format 8
-  conformance. Hub vaults, recovery tools, every KDF configuration, cloud sync,
+  conformance. Recovery-key output is checked against an official phrase vector
+  and password-reset round trips; the desktop recovery UI is not exercised.
+  Hub vaults, recovery tools beyond key output, every KDF configuration, cloud sync,
   and all mount backends are outside this coverage.
 - Starcrypt targets macOS; Windows and Linux behavior has not been validated.

@@ -1,0 +1,110 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    "tasks": [
+        {
+            "label": "Build",
+            "detail": "Compile a debug build at target/debug/starcrypt. This is the default build task.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["build", "--locked"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Build And Install",
+            "detail": "Build the release binary, run the regular test suite, and install StarCrypt into Cargo's bin directory.",
+            "dependsOrder": "sequence",
+            "dependsOn": ["Build Release", "Test"],
+            "type": "process",
+            "command": "cargo",
+            "args": ["install", "--path", ".", "--locked"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Build Release",
+            "detail": "Compile an optimized build at target/release/starcrypt.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["build", "--release", "--locked"],
+            "group": "build",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Check",
+            "detail": "Check all Rust targets for compiler errors without building a runnable binary.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["check", "--all-targets", "--locked"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Check Formatting",
+            "detail": "Report rustfmt differences without editing files.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["fmt", "--check"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Clippy",
+            "detail": "Lint all Rust targets and fail on any warning.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["clippy", "--all-targets", "--locked", "--", "-D", "warnings"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Format",
+            "detail": "Apply rustfmt to the Rust source files.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["fmt"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Package Release",
+            "detail": "Build and package the host macOS architecture in dist/; refuses existing output.",
+            "type": "process",
+            "command": "bash",
+            "args": ["scripts/package-release.sh"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Test",
+            "detail": "Run the regular test suite, including unit and integration tests.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["test", "--locked"],
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Test External Archive Readers",
+            "detail": "Optional compatibility check; requires unzip and 7zz on PATH.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["test", "--locked", "--test", "archive", "external_readers_unpack_native_archives", "--", "--ignored"],
+            "group": "test",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Test Unit Tests",
+            "detail": "Run only the library and CLI unit tests.",
+            "type": "process",
+            "command": "cargo",
+            "args": ["test", "--locked", "--lib", "--bin", "starcrypt"],
+            "group": "test",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Verify",
+            "detail": "Check formatting, run Clippy and the regular test suite, then build the release binary.",
+            "dependsOrder": "sequence",
+            "dependsOn": ["Check Formatting", "Clippy", "Test", "Build Release"],
+            "problemMatcher": []
+        }
+    ]
+}

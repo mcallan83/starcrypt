@@ -2,7 +2,7 @@
 
 <img src="docs/assets/icon.png" alt="StarCrypt icon" width="160">
 
-StarCrypt is a Rust CLI and library for creating and extracting Cryptomator](https://cryptomator.org/) vaults without mounting them. 
+StarCrypt is a Rust CLI and library for creating and extracting [Cryptomator](https://cryptomator.org/) vaults without mounting them. 
 
 The official Cryptomator app provides a graphical way to work with vaults. On macOS, files in a vault are accessed through a mounted volume, typically via WebDAV or FUSE. That workflow can add overhead with large vaults and may not preserve original timestamps.
 
